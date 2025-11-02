@@ -5,9 +5,7 @@ import Order from '../models/order'
 import User, { IUser } from '../models/user'
 import { escapeRegexForSearch, safeString } from '../utils/parseQuery'
 
-// TODO: Добавить guard admin
-// eslint-disable-next-line max-len
-// Get GET /customers?page=2&limit=5&sort=totalAmount&order=desc&registrationDateFrom=2023-01-01&registrationDateTo=2023-12-31&lastOrderDateFrom=2023-01-01&lastOrderDateTo=2023-12-31&totalAmountFrom=100&totalAmountTo=1000&orderCountFrom=1&orderCountTo=10
+// GET /customers?page=2&limit=5&sort=totalAmount&order=desc&registrationDateFrom=2023-01-01&registrationDateTo=2023-12-31&lastOrderDateFrom=2023-01-01&lastOrderDateTo=2023-12-31&totalAmountFrom=100&totalAmountTo=1000&orderCountFrom=1&orderCountTo=10&search=...
 export const getCustomers = async (
     req: Request,
     res: Response,
@@ -17,8 +15,6 @@ export const getCustomers = async (
         const {
             page = 1,
             limit = 10,
-            sortField = 'createdAt',
-            sortOrder = 'desc',
             registrationDateFrom,
             registrationDateTo,
             lastOrderDateFrom,
@@ -29,7 +25,28 @@ export const getCustomers = async (
             orderCountTo,
             search,
         } = req.query
-        console.log('getCustomers query', req.query)
+
+        // ---- NEW: поддержка sort/sortOrder и sortField/sortOrder
+        const rawSortField = (req.query.sortField ??
+            req.query.sort ??
+            'createdAt') as string
+        const rawSortOrder = (req.query.sortOrder ??
+            req.query.order ??
+            'desc') as string
+
+        const allowedSortFields = new Set([
+            'createdAt',
+            'lastOrderDate',
+            'totalAmount',
+            'orderCount',
+            'name',
+        ])
+        const field = allowedSortFields.has(rawSortField)
+            ? rawSortField
+            : 'createdAt'
+        const dir: 1 | -1 =
+            String(rawSortOrder).toLowerCase() === 'asc' ? 1 : -1
+
         const limitNum = Number.isFinite(Number(limit))
             ? Math.min(Math.max(Number(limit), 1), 10)
             : 10
@@ -38,6 +55,7 @@ export const getCustomers = async (
             : 1
 
         const filters: FilterQuery<Partial<IUser>> = {}
+
         if (registrationDateFrom) {
             const d = new Date(String(registrationDateFrom))
             if (!Number.isNaN(d.getTime())) {
@@ -68,12 +86,13 @@ export const getCustomers = async (
             }
         }
 
-       if (typeof totalAmountFrom !== 'undefined') {
-           const v = Number(totalAmountFrom)
-           if (Number.isFinite(v)) {
-               filters.totalAmount = { ...filters.totalAmount, $gte: v }
-           }
-       }
+        if (typeof totalAmountFrom !== 'undefined') {
+            const v = Number(totalAmountFrom)
+            if (Number.isFinite(v)) {
+                filters.totalAmount = { ...filters.totalAmount, $gte: v }
+            }
+        }
+
         if (typeof totalAmountTo !== 'undefined') {
             const v = Number(totalAmountTo)
             if (Number.isFinite(v)) {
@@ -95,33 +114,31 @@ export const getCustomers = async (
             }
         }
 
-       if (typeof search === 'string' && search.length > 0) {
-           const q = safeString(search, 64)
-           if (q) {
-               const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
+        if (typeof search === 'string' && search.length > 0) {
+            const q = safeString(search, 64)
+            if (q) {
+                const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
 
-               const orders = await Order.find(
-                   { deliveryAddress: safeRe },
-                   '_id'
-               )
-               const orderIds = orders.map((order) => order._id)
+                // ищем заказы по адресу доставки, чтобы по ним связать пользователей
+                const orders = await Order.find(
+                    { deliveryAddress: safeRe },
+                    '_id'
+                )
+                const orderIds = orders.map((order) => order._id)
 
-               if (orderIds.length > 0) {
-                   filters.$or = [
-                       { name: safeRe },
-                       { lastOrder: { $in: orderIds } },
-                   ]
-               } else {
-                   filters.$or = [{ name: safeRe }]
-               }
-           }
-       }
-
-
-        const sort: Record<string, 1 | -1> = {}
-        if (sortField && sortOrder) {
-            sort[String(sortField)] = sortOrder === 'desc' ? -1 : 1
+                if (orderIds.length > 0) {
+                    filters.$or = [
+                        { name: safeRe },
+                        { lastOrder: { $in: orderIds } },
+                    ]
+                } else {
+                    filters.$or = [{ name: safeRe }]
+                }
+            }
         }
+
+        // ---- NEW: безопасное формирование sort
+        const sort: Record<string, 1 | -1> = { [field]: dir }
 
         const skip = (pageNum - 1) * limitNum
 
@@ -158,8 +175,7 @@ export const getCustomers = async (
     }
 }
 
-// TODO: Добавить guard admin
-// Get /customers/:id
+// GET /customers/:id
 export const getCustomerById = async (
     req: Request,
     res: Response,
@@ -176,8 +192,7 @@ export const getCustomerById = async (
     }
 }
 
-// TODO: Добавить guard admin
-// Patch /customers/:id
+// PATCH /customers/:id
 export const updateCustomer = async (
     req: Request,
     res: Response,
@@ -198,14 +213,14 @@ export const updateCustomer = async (
                     )
             )
             .populate(['orders', 'lastOrder'])
+
         res.status(200).json(updatedUser)
     } catch (error) {
         next(error)
     }
 }
 
-// TODO: Добавить guard admin
-// Delete /customers/:id
+// DELETE /customers/:id
 export const deleteCustomer = async (
     req: Request,
     res: Response,

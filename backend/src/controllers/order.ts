@@ -4,14 +4,16 @@ import BadRequestError from '../errors/bad-request-error'
 import NotFoundError from '../errors/not-found-error'
 import Order, { IOrder } from '../models/order'
 import Product, { IProduct } from '../models/product'
-import User from '../models/user'
 import {
     escapeHtml,
     escapeRegexForSearch,
     safeString,
 } from '../utils/parseQuery'
 
-// GET /orders?page=2&limit=5&sort=totalAmount&order=desc&orderDateFrom=2024-07-01&orderDateTo=2024-08-01&status=delivering&totalAmountFrom=100&totalAmountTo=1000&search=%2B1
+/**
+ * GET /orders
+ * Пример: /orders?page=2&limit=5&sort=totalAmount&order=desc&orderDateFrom=2024-07-01&orderDateTo=2024-08-01&status=delivering&totalAmountFrom=100&totalAmountTo=1000&search=%2B1
+ */
 export const getOrders = async (
     req: Request,
     res: Response,
@@ -21,8 +23,6 @@ export const getOrders = async (
         const {
             page = 1,
             limit = 10,
-            sortField = 'createdAt',
-            sortOrder = 'desc',
             status,
             totalAmountFrom,
             totalAmountTo,
@@ -31,15 +31,36 @@ export const getOrders = async (
             search,
         } = req.query
 
-        const filters: FilterQuery<Partial<IOrder>> = {}
-
         const limitNum = Number.isFinite(Number(limit))
             ? Math.min(Math.max(Number(limit), 1), 10)
             : 10
-
         const pageNum = Number.isFinite(Number(page))
             ? Math.max(Number(page), 1)
             : 1
+
+        // --- NEW: совместимость по параметрам сортировки (sort/sortOrder и sortField/sortOrder)
+        const rawSortField = (req.query.sortField ??
+            req.query.sort ??
+            'createdAt') as string
+        const rawSortOrder = (req.query.sortOrder ??
+            req.query.order ??
+            'desc') as string
+        const allowedSortFields = new Set([
+            'createdAt',
+            'totalAmount',
+            'orderNumber',
+            'status',
+        ])
+        const field = allowedSortFields.has(rawSortField)
+            ? rawSortField
+            : 'createdAt'
+        const dir: 1 | -1 =
+            String(rawSortOrder).toLowerCase() === 'asc' ? 1 : -1
+        const sortStage = allowedSortFields.has(field)
+            ? [{ $sort: { [field]: dir } }]
+            : []
+
+        const filters: FilterQuery<Partial<IOrder>> = {}
 
         if (typeof status === 'string' && /^[a-zA-Z0-9_-]+$/.test(status)) {
             filters.status = status
@@ -47,121 +68,98 @@ export const getOrders = async (
 
         if (typeof totalAmountFrom !== 'undefined') {
             const v = Number(totalAmountFrom)
-            if (Number.isFinite(v)) {
+            if (Number.isFinite(v))
                 filters.totalAmount = { ...filters.totalAmount, $gte: v }
-            }
         }
-
         if (typeof totalAmountTo !== 'undefined') {
             const v = Number(totalAmountTo)
-            if (Number.isFinite(v)) {
+            if (Number.isFinite(v))
                 filters.totalAmount = { ...filters.totalAmount, $lte: v }
-            }
         }
 
         if (typeof orderDateFrom !== 'undefined') {
             const d = new Date(String(orderDateFrom))
-            if (!Number.isNaN(d.getTime())) {
+            if (!Number.isNaN(d.getTime()))
                 filters.createdAt = { ...filters.createdAt, $gte: d }
-            }
         }
-
         if (typeof orderDateTo !== 'undefined') {
             const d = new Date(String(orderDateTo))
-            if (!Number.isNaN(d.getTime())) {
+            if (!Number.isNaN(d.getTime()))
                 filters.createdAt = { ...filters.createdAt, $lte: d }
-            }
         }
 
-        // Базовый pipeline
-        const basePipeline: any[] = [
-            { $match: filters },
-            {
-                $lookup: {
-                    from: 'products',
-                    localField: 'products',
-                    foreignField: '_id',
-                    as: 'products',
-                },
-            },
-            {
-                $lookup: {
-                    from: 'users',
-                    localField: 'customer',
-                    foreignField: '_id',
-                    as: 'customer',
-                },
-            },
-            {
-                $unwind: {
-                    path: '$customer',
-                    preserveNullAndEmptyArrays: true,
-                },
-            },
-            {
-                $unwind: {
-                    path: '$products',
-                    preserveNullAndEmptyArrays: true,
-                },
-            },
-        ]
-
-        // CHANGED: защищённая обработка search только как строки, без мутации filters.$or
+        // Поиск: подготавливаем фильтр ДО пагинации (без $unwind)
         if (typeof search === 'string' && search.length > 0) {
             const q = safeString(search, 64)
             if (q) {
                 const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
                 const asNumber = Number(q)
-                const searchConditions: any[] = [{ 'products.title': safeRe }]
-                if (Number.isFinite(asNumber)) {
-                    searchConditions.push({ orderNumber: asNumber })
-                }
-                basePipeline.push({ $match: { $or: searchConditions } })
+
+                const productIds = (
+                    await Product.find({ title: safeRe }, { _id: 1 })
+                ).map((p) => p._id)
+
+                const or: any[] = []
+                if (productIds.length > 0)
+                    or.push({ products: { $in: productIds } })
+                if (Number.isFinite(asNumber))
+                    or.push({ orderNumber: asNumber })
+                if (or.length > 0) (filters as any).$or = or
             }
         }
 
-        const sort: Record<string, 1 | -1> = {}
-        if (sortField && sortOrder) {
-            sort[String(sortField)] = sortOrder === 'desc' ? -1 : 1
-        }
+        const skip = (pageNum - 1) * limitNum
 
-        // CHANGED: разделяем pipeline на data и count
-        const dataPipeline = [
-            ...basePipeline,
-            { $sort: sort },
-            { $skip: (Number(pageNum) - 1) * Number(limitNum) },
-            { $limit: Number(limitNum) },
+        // Надёжная пагинация по заказам через $facet (без $unwind products)
+        const facetPipeline = [
+            { $match: filters },
             {
-                $group: {
-                    _id: '$_id',
-                    orderNumber: { $first: '$orderNumber' },
-                    status: { $first: '$status' },
-                    totalAmount: { $first: '$totalAmount' },
-                    products: { $push: '$products' },
-                    customer: { $first: '$customer' },
-                    createdAt: { $first: '$createdAt' },
+                $facet: {
+                    data: [
+                        ...sortStage,
+                        { $skip: skip },
+                        { $limit: limitNum },
+                        {
+                            $lookup: {
+                                from: 'users',
+                                localField: 'customer',
+                                foreignField: '_id',
+                                as: 'customer',
+                            },
+                        },
+                        {
+                            $unwind: {
+                                path: '$customer',
+                                preserveNullAndEmptyArrays: true,
+                            },
+                        },
+                        {
+                            $lookup: {
+                                from: 'products',
+                                localField: 'products',
+                                foreignField: '_id',
+                                as: 'products',
+                            },
+                        },
+                    ],
+                    count: [{ $count: 'total' }],
                 },
             },
         ]
 
-        const orders = await Order.aggregate(dataPipeline)
+        const [{ data = [], count = [] } = {}] = await Order.aggregate(
+            facetPipeline as any[]
+        )
+        const totalOrders = count[0]?.total ?? 0
+        const totalPages = Math.ceil(totalOrders / limitNum)
 
-        const countPipeline = [
-            ...basePipeline,
-            { $group: { _id: '$_id' } },
-            { $count: 'total' },
-        ]
-        const counted = await Order.aggregate(countPipeline)
-        const totalOrders = counted[0]?.total ?? 0
-        const totalPages = Math.ceil(totalOrders / Number(limitNum))
-
-        res.status(200).json({
-            orders,
+        return res.status(200).json({
+            orders: data,
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage: Number(pageNum),
-                pageSize: Number(limitNum),
+                currentPage: pageNum,
+                pageSize: limitNum,
             },
         })
     } catch (error) {
@@ -169,6 +167,10 @@ export const getOrders = async (
     }
 }
 
+/**
+ * GET /order/me
+ * Мои заказы пользователя — без загрузки всех заказов в память
+ */
 export const getOrdersCurrentUser = async (
     req: Request,
     res: Response,
@@ -184,52 +186,39 @@ export const getOrdersCurrentUser = async (
         const pageNum = Number.isFinite(Number(page))
             ? Math.max(Number(page), 1)
             : 1
-
         const skip = (pageNum - 1) * limitNum
 
-        const user = await User.findById(userId)
-            .populate({
-                path: 'orders',
-                populate: [{ path: 'products' }, { path: 'customer' }],
-            })
-            .orFail(
-                () =>
-                    new NotFoundError(
-                        'Пользователь по заданному id отсутствует в базе'
-                    )
-            )
+        const filters: FilterQuery<Partial<IOrder>> = { customer: userId }
 
-        let orders = user.orders as unknown as IOrder[]
-
-        // CHANGED: search только как строка
         if (typeof search === 'string' && search.length > 0) {
             const q = safeString(search, 64)
             if (q) {
-                // если не экранировать то получаем Invalid regular expression: /+1/i: Nothing to repeat
-                const searchRegex = new RegExp(escapeRegexForSearch(q), 'i')
-                const searchNumber = Number(q)
+                const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
+                const asNumber = Number(q)
 
-                const products = await Product.find({ title: searchRegex })
-                const productIds = products.map((p) => p._id)
+                const productIds = (
+                    await Product.find({ title: safeRe }, { _id: 1 })
+                ).map((p) => p._id)
 
-                orders = orders.filter((order) => {
-                    const matchesProductTitle = order.products.some(
-                        (product: any) =>
-                            productIds.some((id) => id.equals(product._id))
-                    )
-                    const matchesOrderNumber =
-                        Number.isFinite(searchNumber) &&
-                        order.orderNumber === searchNumber
-
-                    return matchesOrderNumber || matchesProductTitle
-                })
+                const or: any[] = []
+                if (productIds.length > 0)
+                    or.push({ products: { $in: productIds } })
+                if (Number.isFinite(asNumber))
+                    or.push({ orderNumber: asNumber })
+                if (or.length > 0) (filters as any).$or = or
             }
         }
 
-        const totalOrders = orders.length
-        const totalPages = Math.ceil(totalOrders / limitNum)
+        const [orders, totalOrders] = await Promise.all([
+            Order.find(filters)
+                .sort({ createdAt: -1 }) // или { orderNumber: -1 }
+                .skip(skip)
+                .limit(limitNum)
+                .populate(['customer', 'products']),
+            Order.countDocuments(filters),
+        ])
 
-        orders = orders.slice(skip, skip + limitNum)
+        const totalPages = Math.ceil(totalOrders / limitNum)
 
         return res.send({
             orders,
@@ -245,7 +234,7 @@ export const getOrdersCurrentUser = async (
     }
 }
 
-// Get order by ID
+/** GET /orders/:orderNumber (admin) */
 export const getOrderByNumber = async (
     req: Request,
     res: Response,
@@ -271,6 +260,7 @@ export const getOrderByNumber = async (
     }
 }
 
+/** GET /order/me/:orderNumber */
 export const getOrderCurrentUserByNumber = async (
     req: Request,
     res: Response,
@@ -288,8 +278,9 @@ export const getOrderCurrentUserByNumber = async (
                         'Заказ по заданному id отсутствует в базе'
                     )
             )
+
         if (!order.customer._id.equals(userId)) {
-            // Если нет доступа не возвращаем 403, а отдаем 404
+            // Маскируем отсутствие доступа под 404
             return next(
                 new NotFoundError('Заказ по заданному id отсутствует в базе')
             )
@@ -303,7 +294,7 @@ export const getOrderCurrentUserByNumber = async (
     }
 }
 
-// POST /product
+/** POST /order */
 export const createOrder = async (
     req: Request,
     res: Response,
@@ -311,39 +302,48 @@ export const createOrder = async (
 ) => {
     try {
         const { address, payment, phone, total, email, items, comment } =
-            req.body
+            req.body as {
+                address: string
+                payment: string
+                phone: string
+                total: number
+                email: string
+                items: string[]
+                comment?: string
+            }
 
-        // Валидация телефона (простой формат: + и 7–15 цифр)
+        if (!Array.isArray(items) || items.length === 0) {
+            return next(new BadRequestError('Не указаны товары'))
+        }
+
         const phoneNorm = String(phone ?? '').replace(/[^\d+]/g, '')
         if (!/^\+?\d{7,15}$/.test(phoneNorm)) {
             return next(new BadRequestError('Неверный формат телефона'))
         }
-        const basket: IProduct[] = []
 
-        const products = await Product.find<IProduct>({})
-        const userId = res.locals.user._id
+        const ids = items.map((id) => new Types.ObjectId(id))
+        const products = await Product.find<IProduct>({ _id: { $in: ids } })
+        if (products.length !== ids.length) {
+            return next(new BadRequestError('Некоторые товары не найдены'))
+        }
 
-        // Санитизация комментария (экранируем HTML)
-        const safeComment = escapeHtml(comment, 1024)
-
-        items.forEach((id: Types.ObjectId) => {
-            const product = products.find((p) => p._id.equals(id))
-            if (!product) {
-                throw new BadRequestError(`Товар с id ${id} не найден`)
+        const totalBasket = products.reduce((sum, p) => {
+            if (p.price === null || typeof p.price !== 'number') {
+                throw new BadRequestError(`Товар "${p.title}" не продаётся`)
             }
-            if (product.price === null) {
-                throw new BadRequestError(`Товар с id ${id} не продается`)
-            }
-            return basket.push(product)
-        })
-        const totalBasket = basket.reduce((a, c) => a + c.price, 0)
+            return sum + p.price
+        }, 0)
+
         if (totalBasket !== total) {
             return next(new BadRequestError('Неверная сумма заказа'))
         }
 
+        const userId = res.locals.user._id
+        const safeComment = escapeHtml(comment, 1024)
+
         const newOrder = new Order({
             totalAmount: total,
-            products: items,
+            products: ids,
             payment,
             phone: phoneNorm,
             email,
@@ -351,10 +351,11 @@ export const createOrder = async (
             customer: userId,
             deliveryAddress: address,
         })
-        const populateOrder = await newOrder.populate(['customer', 'products'])
-        await populateOrder.save()
 
-        return res.status(200).json(populateOrder)
+        await newOrder.save()
+        const populated = await newOrder.populate(['customer', 'products'])
+
+        return res.status(200).json(populated)
     } catch (error) {
         if (error instanceof MongooseError.ValidationError) {
             return next(new BadRequestError(error.message))
@@ -363,7 +364,7 @@ export const createOrder = async (
     }
 }
 
-// Update an order
+/** PATCH /orders/:orderNumber (admin) */
 export const updateOrder = async (
     req: Request,
     res: Response,
@@ -383,6 +384,7 @@ export const updateOrder = async (
                     )
             )
             .populate(['customer', 'products'])
+
         return res.status(200).json(updatedOrder)
     } catch (error) {
         if (error instanceof MongooseError.ValidationError) {
@@ -395,7 +397,7 @@ export const updateOrder = async (
     }
 }
 
-// Delete an order
+/** DELETE /orders/:id (admin) */
 export const deleteOrder = async (
     req: Request,
     res: Response,
@@ -410,6 +412,7 @@ export const deleteOrder = async (
                     )
             )
             .populate(['customer', 'products'])
+
         return res.status(200).json(deletedOrder)
     } catch (error) {
         if (error instanceof MongooseError.CastError) {

@@ -41,7 +41,6 @@ const getProducts = async (req: Request, res: Response, next: NextFunction) => {
     }
 }
 
-
 // POST /product
 const createProduct = async (
     req: Request,

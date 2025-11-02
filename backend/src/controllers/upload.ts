@@ -1,13 +1,16 @@
-import { NextFunction, Request, Response } from 'express'
+import { Request, Response, NextFunction } from 'express'
 import { constants } from 'http2'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import crypto from 'crypto'
-import { allowedTypes } from '../middlewares/file'
-import { validateMimeType } from '../utils/validateMimeType'
+import fs from 'fs/promises'
+import path from 'path'
 import BadRequestError from '../errors/bad-request-error'
+import { validateMimeType } from '../utils/validateMimeType'
 import { fileSizeConfig } from '../config'
 
+/**
+ * Контроллер загрузки файлов
+ * POST /upload
+ */
 export const uploadFile = async (
     req: Request,
     res: Response,
@@ -15,29 +18,34 @@ export const uploadFile = async (
 ) => {
     try {
         if (!req.file) {
-            return next(new BadRequestError('Файл не загружен'))
+            throw new BadRequestError('Файл не передан')
         }
 
-        if (req.file.size < fileSizeConfig.minSize) {
-            await fs.unlink(req.file.path)
-            return next(new BadRequestError('Размер файла слишком мал'))
+        const { size, path: tempPath, originalname } = req.file
+
+        // Проверка размера файла
+        if (size < fileSizeConfig.minSize) {
+            throw new BadRequestError(
+                'Размер файла меньше минимально допустимого'
+            )
+        }
+        if (size > fileSizeConfig.maxSize) {
+            throw new BadRequestError(
+                'Размер файла превышает максимальный лимит'
+            )
         }
 
-        if (req.file.size > fileSizeConfig.maxSize) {
-            await fs.unlink(req.file.path)
-            return next(new BadRequestError('Размер файла слишком велик'))
+        // Проверяем MIME сигнатуру (безопасная проверка)
+        const mimeType = await validateMimeType(tempPath)
+        if (!mimeType) {
+            throw new BadRequestError('Неверный тип файла')
         }
 
-        const mimeType = await validateMimeType(req.file.path)
-        if (!mimeType || !mimeType.startsWith('image/')) {
-            await fs.unlink(req.file.path)
-            return next(new BadRequestError('Некорректный формат файла'))
-        }
-
-        // формируем безопасные пути
-        const ext = path.extname(req.file.originalname).toLowerCase()
+        // Безопасное новое имя (исключаем использование originalname)
+        const ext = path.extname(originalname).toLowerCase()
         const safeName = crypto.randomBytes(16).toString('hex') + ext
 
+        // Каталог загрузки
         const uploadDir = process.env.UPLOAD_PATH || 'uploads'
         const absoluteUploadDir = path.isAbsolute(uploadDir)
             ? uploadDir
@@ -45,17 +53,21 @@ export const uploadFile = async (
 
         await fs.mkdir(absoluteUploadDir, { recursive: true })
 
+        // Переносим файл из временной папки
         const newPath = path.join(absoluteUploadDir, safeName)
-        await fs.rename(req.file.path, newPath)
+        await fs.rename(tempPath, newPath)
+
+        // Стабильный путь для ответа клиенту (без оригинального имени)
+        const publicFileName =
+            '/' +
+            [uploadDir, safeName].filter(Boolean).join('/').replace(/\\+/g, '/')
 
         return res.status(constants.HTTP_STATUS_CREATED).send({
-            fileName: `/${path.relative(process.cwd(), newPath).replace(/\\+/g, '/')}`,
-            size: req.file.size,
+            fileName: publicFileName,
+            size,
             mimeType,
         })
     } catch (error) {
         return next(error)
     }
 }
-
-export default {}
