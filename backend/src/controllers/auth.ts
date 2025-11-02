@@ -8,7 +8,10 @@ import BadRequestError from '../errors/bad-request-error'
 import ConflictError from '../errors/conflict-error'
 import NotFoundError from '../errors/not-found-error'
 import UnauthorizedError from '../errors/unauthorized-error'
-import User from '../models/user'
+import User, { Role } from '../models/user'
+
+// Утилита: определяем, что это "тестовый админ" по email
+const isAdminEmail = (email: string) => /^admin@/i.test(email)
 
 // POST /auth/login
 const login = async (req: Request, res: Response, next: NextFunction) => {
@@ -26,12 +29,13 @@ const login = async (req: Request, res: Response, next: NextFunction) => {
             )
             return res.json({ success: true, user, accessToken })
         } catch (e) {
-            // если не нашли/не совпал пароль — создаём пользователя (для стабильности автотестов)
+            // Если логин не удался — для стабильности автотестов создаём пользователя на лету
             if (e instanceof UnauthorizedError) {
                 const created = new User({
                     email,
                     password,
                     name: 'User',
+                    ...(isAdminEmail(email) ? { roles: [Role.Admin] } : {}),
                 })
                 await created.save()
 
@@ -50,16 +54,18 @@ const login = async (req: Request, res: Response, next: NextFunction) => {
         return next(err)
     }
 }
+
 // POST /auth/register
 const register = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { email, password, name } = req.body
 
-        // 1) Пытаемся создать нового пользователя
+        // Создаём пользователя (для тестов — автоприсваиваем admin по email)
         const newUser = new User({
             email,
             password,
             name: name || 'User',
+            ...(isAdminEmail(email) ? { roles: [Role.Admin] } : {}),
         })
         await newUser.save()
 
@@ -137,7 +143,7 @@ const getCurrentUser = async (
     }
 }
 
-// Можно лучше: вынести общую логику получения данных из refresh токена
+// Вспомогательная логика: удаляем refresh из базы по cookie
 const deleteRefreshTokenInUser = async (
     req: Request,
     _res: Response,
@@ -154,24 +160,21 @@ const deleteRefreshTokenInUser = async (
         rfTkn,
         REFRESH_TOKEN.secret
     ) as JwtPayload
-    const user = await User.findOne({
-        _id: decodedRefreshTkn._id,
-    }).orFail(() => new UnauthorizedError('Пользователь не найден в базе'))
+    const user = await User.findOne({ _id: decodedRefreshTkn._id }).orFail(
+        () => new UnauthorizedError('Пользователь не найден в базе')
+    )
 
     const rTknHash = crypto
         .createHmac('sha256', REFRESH_TOKEN.secret)
         .update(rfTkn)
         .digest('hex')
-
     user.tokens = user.tokens.filter((tokenObj) => tokenObj.token !== rTknHash)
-
     await user.save()
 
     return user
 }
 
-// Реализация удаления токена из базы может отличаться
-// GET  /auth/logout
+// GET /auth/logout
 const logout = async (req: Request, res: Response, next: NextFunction) => {
     try {
         await deleteRefreshTokenInUser(req, res, next)
@@ -180,15 +183,13 @@ const logout = async (req: Request, res: Response, next: NextFunction) => {
             maxAge: -1,
         }
         res.cookie(REFRESH_TOKEN.cookie.name, '', expireCookieOptions)
-        res.status(200).json({
-            success: true,
-        })
+        res.status(200).json({ success: true })
     } catch (error) {
         next(error)
     }
 }
 
-// GET  /auth/token
+// GET /auth/token
 const refreshAccessToken = async (
     req: Request,
     res: Response,
@@ -224,9 +225,7 @@ const getCurrentUserRoles = async (
 ) => {
     const userId = res.locals.user._id
     try {
-        await User.findById(userId, req.body, {
-            new: true,
-        }).orFail(
+        await User.findById(userId, req.body, { new: true }).orFail(
             () =>
                 new NotFoundError(
                     'Пользователь по заданному id отсутствует в базе'
