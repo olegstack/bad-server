@@ -3,6 +3,7 @@ import { FilterQuery } from 'mongoose'
 import NotFoundError from '../errors/not-found-error'
 import Order from '../models/order'
 import User, { IUser } from '../models/user'
+import { escapeRegexForSearch, safeString } from '../utils/parseQuery'
 
 // TODO: Добавить guard admin
 // eslint-disable-next-line max-len
@@ -30,6 +31,8 @@ export const getCustomers = async (
         } = req.query
 
         const filters: FilterQuery<Partial<IUser>> = {}
+         const normalizedLimit = Math.min(Number(limit), 10).toString()
+         const normalizedLimitPage = Math.max(Number(page), 1)
 
         if (registrationDateFrom) {
             filters.createdAt = {
@@ -92,20 +95,22 @@ export const getCustomers = async (
         }
 
         if (search) {
-            const searchRegex = new RegExp(search as string, 'i')
-            const orders = await Order.find(
-                {
-                    $or: [{ deliveryAddress: searchRegex }],
-                },
-                '_id'
-            )
+            const q = safeString(search, 64) // ограничим длину и уберём пустые
+            if (q) {
+                const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
 
-            const orderIds = orders.map((order) => order._id)
+                const orders = await Order.find(
+                    { $or: [{ deliveryAddress: safeRe }] },
+                    '_id'
+                )
 
-            filters.$or = [
-                { name: searchRegex },
-                { lastOrder: { $in: orderIds } },
-            ]
+                const orderIds = orders.map((order) => order._id)
+
+                filters.$or = [
+                    { name: safeRe },
+                    { lastOrder: { $in: orderIds } },
+                ]
+            }
         }
 
         const sort: { [key: string]: any } = {}
@@ -116,8 +121,8 @@ export const getCustomers = async (
 
         const options = {
             sort,
-            skip: (Number(page) - 1) * Number(limit),
-            limit: Number(limit),
+            skip: (Number(normalizedLimitPage) - 1) * Number(normalizedLimit),
+            limit: Number(normalizedLimit),
         }
 
         const users = await User.find(filters, null, options).populate([
@@ -144,8 +149,8 @@ export const getCustomers = async (
             pagination: {
                 totalUsers,
                 totalPages,
-                currentPage: Number(page),
-                pageSize: Number(limit),
+                currentPage: Number(normalizedLimitPage),
+                pageSize: Number(normalizedLimit),
             },
         })
     } catch (error) {

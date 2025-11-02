@@ -17,21 +17,18 @@ const login = async (req: Request, res: Response, next: NextFunction) => {
         const user = await User.findUserByCredentials(email, password)
         const accessToken = user.generateAccessToken()
         const refreshToken = await user.generateRefreshToken()
+
         res.cookie(
             REFRESH_TOKEN.cookie.name,
             refreshToken,
             REFRESH_TOKEN.cookie.options
         )
-        return res.json({
-            success: true,
-            user,
-            accessToken,
-        })
+
+        return res.json({ success: true, user, accessToken })
     } catch (err) {
         return next(err)
     }
 }
-
 // POST /auth/register
 const register = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -46,11 +43,6 @@ const register = async (req: Request, res: Response, next: NextFunction) => {
             refreshToken,
             REFRESH_TOKEN.cookie.options
         )
-        return res.status(constants.HTTP_STATUS_CREATED).json({
-            success: true,
-            user: newUser,
-            accessToken,
-        })
     } catch (error) {
         if (error instanceof MongooseError.ValidationError) {
             return next(new BadRequestError(error.message))

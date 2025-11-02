@@ -1,35 +1,77 @@
 import { errors } from 'celebrate'
 import cookieParser from 'cookie-parser'
-import cors from 'cors'
+import cors, { CorsOptions } from 'cors'
 import 'dotenv/config'
 import express, { json, urlencoded } from 'express'
 import mongoose from 'mongoose'
 import path from 'path'
-import { DB_ADDRESS } from './config'
+import rateLimit from 'express-rate-limit'
+import mongoSanitize from 'express-mongo-sanitize'
+
+import { DB_ADDRESS, ORIGIN_ALLOW, PORT } from './config'
 import errorHandler from './middlewares/error-handler'
 import serveStatic from './middlewares/serverStatic'
 import routes from './routes'
 
-const { PORT = 3000 } = process.env
 const app = express()
+
+// health
+app.get('/__ping', (_req, res) => res.type('text').send('pong'))
+
+// Rate limit (v6): используем max, а не limit
+app.use(
+    rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 60,
+        message: 'Достигнут лимит запросов, попробуйте позже',
+        standardHeaders: true,
+        legacyHeaders: false,
+    })
+)
 
 app.use(cookieParser())
 
-app.use(cors())
-// app.use(cors({ origin: ORIGIN_ALLOW, credentials: true }));
-// app.use(express.static(path.join(__dirname, 'public')));
+// Body parsers до статики и роутов
+app.use(urlencoded({ extended: true, limit: '10kb' }))
+app.use(json({ limit: '10kb' }))
 
+// Защита от NoSQL-инъекций
+app.use(mongoSanitize())
+
+// CORS (единые опции и для preflight)
+const whitelist = [
+    ORIGIN_ALLOW,
+    'http://localhost',
+    'http://localhost:5173',
+].filter(Boolean)
+const corsOptions: CorsOptions = {
+    origin(origin, cb) {
+        // Разрешаем запросы без Origin (curl/healthcheck) и локальные фронты
+        if (!origin || whitelist.includes(origin)) return cb(null, true)
+        return cb(new Error('Not allowed by CORS'))
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-CSRF-Token',
+        'x-csrf-token',
+        'X-Requested-With',
+    ],
+    exposedHeaders: ['Set-Cookie'],
+    optionsSuccessStatus: 204,
+}
+app.use(cors(corsOptions))
+app.options('*', cors(corsOptions)) // preflight c теми же опциями
+
+// Статика
 app.use(serveStatic(path.join(__dirname, 'public')))
 
-app.use(urlencoded({ extended: true }))
-app.use(json())
-
-app.options('*', cors())
+// Роуты и обработчики
 app.use(routes)
 app.use(errors())
 app.use(errorHandler)
-
-// eslint-disable-next-line no-console
 
 const bootstrap = async () => {
     try {
