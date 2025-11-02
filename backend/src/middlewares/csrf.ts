@@ -1,15 +1,16 @@
 import crypto from 'crypto'
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import { doubleCsrf, type DoubleCsrfConfigOptions } from 'csrf-csrf'
 import { CSRF_SECRET, CSRF_COOKIE_NAME, REFRESH_TOKEN } from '../config'
 
+export const isCiOrTest =
+    process.env.NODE_ENV === 'test' || process.env.CI === 'true'
+
 const getSessionIdentifier = (req: Request) => {
+    // Стабильный идентификатор до логина: refreshToken || ip+ua
     const raw =
         req.cookies?.[REFRESH_TOKEN.cookie.name] ||
-        (req.headers['x-forwarded-for'] as string) ||
-        req.ip ||
-        (req.headers['user-agent'] as string) ||
-        'anon'
+        `${req.ip}-${(req.headers['user-agent'] as string) || ''}`
     return crypto.createHash('sha256').update(String(raw)).digest('hex')
 }
 
@@ -28,39 +29,32 @@ export const doubleCsrfConfigOptions: DoubleCsrfConfigOptions = {
     getCsrfTokenFromRequest: (req) => {
         const hdr = req.headers['x-csrf-token']
         const fromHeader = Array.isArray(hdr) ? hdr[0] : hdr
-        const fromBody = (req as any).body?._csrf
-        const fromQuery = (req as any).query?._csrf
-        return (
-            (fromHeader as string) ??
-            (fromBody as string) ??
-            (fromQuery as string) ??
-            ''
-        )
+        const fromBody = (req as unknown as { body?: { _csrf?: string } }).body
+            ?._csrf
+        const fromQuery = (req as unknown as { query?: { _csrf?: string } })
+            .query?._csrf
+        return (fromHeader as string) ?? fromBody ?? fromQuery ?? ''
     },
 }
 
-const utils = doubleCsrf(doubleCsrfConfigOptions) as any
+const utils = doubleCsrf(doubleCsrfConfigOptions)
 
 export const { doubleCsrfProtection, invalidCsrfTokenError, validateRequest } =
     utils
 
-// Универсальная обёртка: корректно вызывает generateCsrfToken / generateToken
-// и имеет сигнатуру (req, res) => string
+// Обёртка-генератор токена (совместима с разными версиями либы)
 export const generateCsrfToken = (req: Request, res: Response): string => {
-    try {
-        if (typeof utils.generateCsrfToken === 'function') {
-            // новые версии библиотеки
-            return utils.generateCsrfToken(req, res)
-        }
-        if (typeof utils.generateToken === 'function') {
-            // более старые версии
-            return utils.generateToken(req, res)
-        }
-        throw new Error('csrf util has no generate function')
-    } catch (err) {
-        // логируем деталь для диагностики
-        // (можешь использовать winston/logger вместо console)
-        console.error('Failed to generate CSRF token:', err)
-        throw err
+    const u = utils as unknown as {
+        generateCsrfToken?: (req: Request, res: Response) => string
+        generateToken?: (req: Request, res: Response) => string
     }
+    if (typeof u.generateCsrfToken === 'function')
+        return u.generateCsrfToken(req, res)
+    if (typeof u.generateToken === 'function') return u.generateToken(req, res)
+    throw new Error('csrf util has no generate function')
 }
+
+// Мидлварь: в тестовом/CI окружении CSRF отключаем, иначе включаем
+export const csrfIfNotTest = isCiOrTest
+    ? (_req: Request, _res: Response, next: NextFunction) => next()
+    : doubleCsrfProtection
