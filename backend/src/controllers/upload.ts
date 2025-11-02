@@ -3,9 +3,9 @@ import { constants } from 'http2'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'crypto'
-import { allowedTypes } from '../middlewares/file'
-import { validateMimeType } from '../utils/validateMimeType'
+
 import BadRequestError from '../errors/bad-request-error'
+import { validateMimeType } from '../utils/validateMimeType'
 import { fileSizeConfig } from '../config'
 
 export const uploadFile = async (
@@ -18,55 +18,51 @@ export const uploadFile = async (
             return next(new BadRequestError('Файл не загружен'))
         }
 
-        const { size, originalname, path: tmpPath } = req.file
-
-        if (size < fileSizeConfig.minSize) {
-            await fs.unlink(tmpPath)
+        // 1) Лимиты размера
+        if (req.file.size < fileSizeConfig.minSize) {
+            await fs.unlink(req.file.path)
             return next(new BadRequestError('Размер файла слишком мал'))
         }
-        if (size > fileSizeConfig.maxSize) {
-            await fs.unlink(tmpPath)
+        if (req.file.size > fileSizeConfig.maxSize) {
+            await fs.unlink(req.file.path)
             return next(new BadRequestError('Размер файла слишком велик'))
         }
 
-        // Определяем фактический MIME (по сигнатуре/контенту)
-        const mimeType = await validateMimeType(tmpPath)
+        // 2) Проверяем реальный MIME по сигнатуре, а не по расширению
+        const mimeType = await validateMimeType(req.file.path)
         if (!mimeType || !mimeType.startsWith('image/')) {
-            await fs.unlink(tmpPath)
+            await fs.unlink(req.file.path)
             return next(new BadRequestError('Некорректный формат файла'))
         }
 
-        // Генерируем безопасное имя
-        const ext = path.extname(originalname || '').toLowerCase() || '.bin'
-        const safeName = crypto.randomBytes(16).toString('hex') + ext
+        // 3) Генерируем безопасное имя: <random>.<ext>, БЕЗ оригинального basename
+        const ext = path.extname(req.file.originalname || '').toLowerCase()
+        const safeExt = ext && ext.length <= 10 ? ext : '' // на всякий случай
+        const safeName = crypto.randomBytes(16).toString('hex') + safeExt
 
-        // Нормализуем базовую директорию загрузок
-        const envUpload = process.env.UPLOAD_PATH || 'uploads'
-        // всегда приводим к относительному виду под проект
-        const uploadRel = envUpload
-            .replace(/^(\.+[\\/])+/, '')
-            .replace(/^\/+/, '')
-        const absoluteUploadDir = path.join(process.cwd(), uploadRel)
+        // 4) Директория загрузок (по умолчанию "uploads" в корне проекта)
+        const uploadDir = process.env.UPLOAD_PATH || 'uploads'
+        const absoluteUploadDir = path.isAbsolute(uploadDir)
+            ? uploadDir
+            : path.join(process.cwd(), uploadDir)
 
         await fs.mkdir(absoluteUploadDir, { recursive: true })
+
+        // 5) Переносим файл
         const newPath = path.join(absoluteUploadDir, safeName)
+        await fs.rename(req.file.path, newPath)
 
-        await fs.rename(tmpPath, newPath)
-
-        // Публичный путь (без абсолютных директорий ОС)
+        // 6) Публичный путь (без оригинального имени!)
         const publicFileName =
             '/' +
-            [uploadRel, safeName].filter(Boolean).join('/').replace(/\\+/g, '/')
+            [uploadDir, safeName].filter(Boolean).join('/').replace(/\\+/g, '/')
 
         return res.status(constants.HTTP_STATUS_CREATED).send({
             fileName: publicFileName,
-            size,
+            size: req.file.size,
             mimeType,
         })
     } catch (error) {
-        try {
-            if (req.file?.path) await fs.unlink(req.file.path).catch(() => {})
-        } catch {}
         return next(error)
     }
 }

@@ -12,7 +12,6 @@ import {
 
 /**
  * GET /orders
- * Пример: /orders?page=2&limit=5&sort=totalAmount&order=desc&orderDateFrom=2024-07-01&orderDateTo=2024-08-01&status=delivering&totalAmountFrom=100&totalAmountTo=1000&search=%2B1
  */
 export const getOrders = async (
     req: Request,
@@ -20,6 +19,15 @@ export const getOrders = async (
     next: NextFunction
 ) => {
     try {
+        //  если в URL просочились массивы/объекты через query-string
+        const orig = req.originalUrl || ''
+        if (
+            orig.includes('search[') ||
+            orig.toLowerCase().includes('search%5b')
+        ) {
+            return next(new BadRequestError('Некорректный параметр поиска'))
+        }
+
         const {
             page = 1,
             limit = 10,
@@ -38,7 +46,7 @@ export const getOrders = async (
             ? Math.max(Number(page), 1)
             : 1
 
-        // --- NEW: совместимость по параметрам сортировки (sort/sortOrder и sortField/sortOrder)
+        // Сортировка (совместимость с ?sort / ?order)
         const rawSortField = (req.query.sortField ??
             (req.query as any).sort ??
             'createdAt') as string
@@ -88,7 +96,7 @@ export const getOrders = async (
                 filters.createdAt = { ...filters.createdAt, $lte: d }
         }
 
-        // --- NEW: строгая валидация search, чтобы уязвимая агрегация давала 400
+        // 🔒 Строгая валидация search
         if (typeof search !== 'undefined') {
             if (typeof search !== 'string') {
                 return next(new BadRequestError('Некорректный параметр поиска'))
@@ -97,13 +105,13 @@ export const getOrders = async (
             if (!qRaw) {
                 return next(new BadRequestError('Некорректный параметр поиска'))
             }
-            // блокируем явные символы операторов/агрегации: { } [ ] $ :
+            // Блокируем символы, характерные для инъекций/операторов
             if (/[{}\[\]\$:]/.test(qRaw)) {
                 return next(new BadRequestError('Некорректный параметр поиска'))
             }
         }
 
-        // Поиск: подготавливаем фильтр ДО пагинации (без $unwind)
+        // Поиск (если строка валидна)
         if (typeof search === 'string' && search.length > 0) {
             const q = safeString(search, 64)
             if (q) {
@@ -125,7 +133,6 @@ export const getOrders = async (
 
         const skip = (pageNum - 1) * limitNum
 
-        // Надёжная пагинация по заказам через $facet (без $unwind products)
         const facetPipeline = [
             { $match: filters },
             {
@@ -160,11 +167,10 @@ export const getOrders = async (
                     count: [{ $count: 'total' }],
                 },
             },
-        ]
+        ] as any[]
 
-        const [{ data = [], count = [] } = {}] = await Order.aggregate(
-            facetPipeline as any[]
-        )
+        const [{ data = [], count = [] } = {}] =
+            await Order.aggregate(facetPipeline)
         const totalOrders = count[0]?.total ?? 0
         const totalPages = Math.ceil(totalOrders / limitNum)
 
@@ -184,7 +190,6 @@ export const getOrders = async (
 
 /**
  * GET /order/me
- * Мои заказы пользователя — без загрузки всех заказов в память
  */
 export const getOrdersCurrentUser = async (
     req: Request,
@@ -295,7 +300,6 @@ export const getOrderCurrentUserByNumber = async (
             )
 
         if (!order.customer._id.equals(userId)) {
-            // Маскируем отсутствие доступа под 404
             return next(
                 new NotFoundError('Заказ по заданному id отсутствует в базе')
             )
