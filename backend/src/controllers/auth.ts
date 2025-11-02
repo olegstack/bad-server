@@ -33,8 +33,11 @@ const login = async (req: Request, res: Response, next: NextFunction) => {
 const register = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { email, password, name } = req.body
+
+        // 1) Пытаемся создать нового пользователя
         const newUser = new User({ email, password, name })
         await newUser.save()
+
         const accessToken = newUser.generateAccessToken()
         const refreshToken = await newUser.generateRefreshToken()
 
@@ -43,15 +46,51 @@ const register = async (req: Request, res: Response, next: NextFunction) => {
             refreshToken,
             REFRESH_TOKEN.cookie.options
         )
+
+        // 201 — новый пользователь создан
+        return res.status(constants.HTTP_STATUS_CREATED).json({
+            success: true,
+            user: newUser,
+            accessToken,
+        })
     } catch (error) {
+        // 2) Если дубликат email — делаем регистрацию идемпотентной
+        // Пытаемся "автологин": сверяем пароль и выдаём токены
+        if (error instanceof Error && error.message.includes('E11000')) {
+            try {
+                const existing = await User.findUserByCredentials(
+                    req.body.email,
+                    req.body.password
+                )
+                const accessToken = existing.generateAccessToken()
+                const refreshToken = await existing.generateRefreshToken()
+
+                res.cookie(
+                    REFRESH_TOKEN.cookie.name,
+                    refreshToken,
+                    REFRESH_TOKEN.cookie.options
+                )
+
+                // 200 — пользователь уже был, но мы его успешно «залогинили»
+                return res.status(constants.HTTP_STATUS_OK).json({
+                    success: true,
+                    user: existing,
+                    accessToken,
+                })
+            } catch {
+                // email занят, но пароль не подошёл — честный 409
+                return next(
+                    new ConflictError(
+                        'Пользователь с таким email уже существует'
+                    )
+                )
+            }
+        }
+
         if (error instanceof MongooseError.ValidationError) {
             return next(new BadRequestError(error.message))
         }
-        if (error instanceof Error && error.message.includes('E11000')) {
-            return next(
-                new ConflictError('Пользователь с таким email уже существует')
-            )
-        }
+
         return next(error)
     }
 }
