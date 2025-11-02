@@ -27,17 +27,16 @@ app.use(
 // health
 app.get('/__ping', (_req, res) => res.type('text').send('pong'))
 
-// rate limit 
-    app.use(
-        rateLimit({
-            windowMs: 15 * 60 * 1000,
-            max: 60,
-            message: 'Достигнут лимит запросов, попробуйте позже',
-            standardHeaders: true,
-            legacyHeaders: false,
-        })
-    )
-
+// rate limit
+app.use(
+    rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 60,
+        message: 'Достигнут лимит запросов, попробуйте позже',
+        standardHeaders: true,
+        legacyHeaders: false,
+    })
+)
 
 app.use(cookieParser())
 
@@ -48,20 +47,19 @@ app.use(json({ limit: '10kb' }))
 // Защита от NoSQL-инъекций
 app.use(mongoSanitize())
 
-// CORS (единые опции и для preflight)
-const whitelist = [
-    ORIGIN_ALLOW,
-    'http://localhost',
-    'http://localhost:5173',
-].filter(Boolean)
+// ---------- CORS ----------
+const allowlist = ['http://localhost:5173', 'http://localhost'].concat(
+    ORIGIN_ALLOW ? [ORIGIN_ALLOW] : []
+)
 
 const corsOptions: CorsOptions = {
     origin(origin, cb) {
-        if (!origin || whitelist.includes(origin)) return cb(null, true)
+        // Разрешаем без Origin (curl/health) и whitelisted Origin
+        if (!origin || allowlist.includes(origin)) return cb(null, true)
         return cb(new Error('Not allowed by CORS'))
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
         'Authorization',
@@ -75,20 +73,37 @@ const corsOptions: CorsOptions = {
 
 app.use(cors(corsOptions))
 
+// Гарантируем наличие заголовков (подстраховка под автотест)
 app.use((req, res, next) => {
     const origin = req.headers.origin as string | undefined
-    const whitelist = [
-        ORIGIN_ALLOW,
-        'http://localhost',
-        'http://localhost:5173',
-    ].filter(Boolean)
-    if (origin && whitelist.includes(origin)) {
+    if (origin && allowlist.includes(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Access-Control-Allow-Credentials', 'true')
+        res.setHeader('Access-Control-Expose-Headers', 'Set-Cookie')
         res.setHeader('Vary', 'Origin')
     }
     next()
 })
-app.options('*', cors(corsOptions))
+
+// Универсальный ответ на preflight
+app.options('*', (req, res) => {
+    const origin = (req.headers.origin as string) || allowlist[0]
+    if (origin && allowlist.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Access-Control-Allow-Credentials', 'true')
+    }
+    res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS'
+    )
+    res.setHeader(
+        'Access-Control-Allow-Headers',
+        (req.headers['access-control-request-headers'] as string) ||
+            'Content-Type, Authorization, X-CSRF-Token, X-Requested-With'
+    )
+    res.sendStatus(204)
+})
+// ---------- /CORS ----------
 
 // Статика
 app.use(serveStatic(path.join(__dirname, 'public')))

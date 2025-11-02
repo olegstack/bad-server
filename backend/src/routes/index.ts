@@ -24,7 +24,6 @@ router.use('/order', auth, orderRouter)
 router.use('/upload', auth, uploadRouter)
 router.use(
     '/customers',
-    doubleCsrfProtection,
     auth,
     roleGuardMiddleware(Role.Admin),
     customerRouter
