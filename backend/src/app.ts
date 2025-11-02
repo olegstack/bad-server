@@ -27,8 +27,7 @@ app.use(
 // health
 app.get('/__ping', (_req, res) => res.type('text').send('pong'))
 
-// rate limit — включаем везде, кроме тестов/CI (чтобы Actions не споткнулся)
-if (process.env.NODE_ENV !== 'test' && process.env.CI !== 'true') {
+// rate limit 
     app.use(
         rateLimit({
             windowMs: 15 * 60 * 1000,
@@ -38,7 +37,7 @@ if (process.env.NODE_ENV !== 'test' && process.env.CI !== 'true') {
             legacyHeaders: false,
         })
     )
-}
+
 
 app.use(cookieParser())
 

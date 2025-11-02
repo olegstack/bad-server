@@ -12,3 +12,13 @@ export const escapeRegexForSearch = (v: string, maxLen = 64): string => {
     // экранируем регэксп-метасимволы
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
+
+export const escapeHtml = (s: unknown, maxLen = 1024): string => {
+    const str = String(s ?? '').slice(0, maxLen)
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;')
+}

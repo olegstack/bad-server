@@ -5,7 +5,7 @@ import NotFoundError from '../errors/not-found-error'
 import Order, { IOrder } from '../models/order'
 import Product, { IProduct } from '../models/product'
 import User from '../models/user'
-import { escapeRegexForSearch, safeString } from '../utils/parseQuery'
+import { escapeHtml, escapeRegexForSearch, safeString } from '../utils/parseQuery'
 
 // eslint-disable-next-line max-len
 // GET /orders?page=2&limit=5&sort=totalAmount&order=desc&orderDateFrom=2024-07-01&orderDateTo=2024-08-01&status=delivering&totalAmountFrom=100&totalAmountTo=1000&search=%2B1
@@ -31,58 +31,48 @@ export const getOrders = async (
 
         const filters: FilterQuery<Partial<IOrder>> = {}
 
-        const normalizedLimit = Math.min(Number(limit), 10).toString()
-        const normalizedLimitPage = Math.max(Number(page), 1)
+        const limitNum = Number.isFinite(Number(limit))
+            ? Math.min(Math.max(Number(limit), 1), 10)
+            : 10
 
-        if (status) {
+        const pageNum = Number.isFinite(Number(page))
+            ? Math.max(Number(page), 1)
+            : 1
+
+        if (typeof status !== 'undefined') {
             if (typeof status === 'string' && /^[a-zA-Z0-9_-]+$/.test(status)) {
                 filters.status = status
             } else {
-                throw new BadRequestError('Hевалидный параметр статуса')
+                throw new BadRequestError('Невалидный параметр статуса')
             }
         }
 
-        if (search) {
-            if (/[^\w\s]/.test(search as string)) {
-                throw new BadRequestError('Hевалидный поисковый запрос')
-            }
+        if (typeof totalAmountFrom !== 'undefined') {
+            const v = Number(totalAmountFrom)
+            if (!Number.isFinite(v))
+                throw new BadRequestError('Неверный totalAmountFrom')
+            filters.totalAmount = { ...filters.totalAmount, $gte: v }
         }
 
-        if (status) {
-            if (typeof status === 'object') {
-                Object.assign(filters, status)
-            }
-            if (typeof status === 'string') {
-                filters.status = status
-            }
+        if (typeof totalAmountTo !== 'undefined') {
+            const v = Number(totalAmountTo)
+            if (!Number.isFinite(v))
+                throw new BadRequestError('Неверный totalAmountTo')
+            filters.totalAmount = { ...filters.totalAmount, $lte: v }
         }
 
-        if (totalAmountFrom) {
-            filters.totalAmount = {
-                ...filters.totalAmount,
-                $gte: Number(totalAmountFrom),
-            }
+        if (typeof orderDateFrom !== 'undefined') {
+            const d = new Date(String(orderDateFrom))
+            if (Number.isNaN(d.getTime()))
+                throw new BadRequestError('Неверный orderDateFrom')
+            filters.createdAt = { ...filters.createdAt, $gte: d }
         }
 
-        if (totalAmountTo) {
-            filters.totalAmount = {
-                ...filters.totalAmount,
-                $lte: Number(totalAmountTo),
-            }
-        }
-
-        if (orderDateFrom) {
-            filters.createdAt = {
-                ...filters.createdAt,
-                $gte: new Date(orderDateFrom as string),
-            }
-        }
-
-        if (orderDateTo) {
-            filters.createdAt = {
-                ...filters.createdAt,
-                $lte: new Date(orderDateTo as string),
-            }
+        if (typeof orderDateTo !== 'undefined') {
+            const d = new Date(String(orderDateTo))
+            if (Number.isNaN(d.getTime()))
+                throw new BadRequestError('Неверный orderDateTo')
+            filters.createdAt = { ...filters.createdAt, $lte: d }
         }
 
         const aggregatePipeline: any[] = [
@@ -125,8 +115,7 @@ export const getOrders = async (
             }
         }
 
-        const sort: { [key: string]: any } = {}
-
+        const sort: Record<string, 1 | -1> = {}
         if (sortField && sortOrder) {
             sort[sortField as string] = sortOrder === 'desc' ? -1 : 1
         }
@@ -134,10 +123,9 @@ export const getOrders = async (
         aggregatePipeline.push(
             { $sort: sort },
             {
-                $skip:
-                    (Number(normalizedLimitPage) - 1) * Number(normalizedLimit),
+                $skip: (Number(pageNum) - 1) * Number(limitNum),
             },
-            { $limit: Number(normalizedLimit) },
+            { $limit: Number(limitNum) },
             {
                 $group: {
                     _id: '$_id',
@@ -153,15 +141,15 @@ export const getOrders = async (
 
         const orders = await Order.aggregate(aggregatePipeline)
         const totalOrders = await Order.countDocuments(filters)
-        const totalPages = Math.ceil(totalOrders / Number(normalizedLimit))
+        const totalPages = Math.ceil(totalOrders / Number(limitNum))
 
         res.status(200).json({
             orders,
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage: Number(normalizedLimitPage),
-                pageSize: Number(normalizedLimit),
+                currentPage: Number(pageNum),
+                pageSize: Number(limitNum),
             },
         })
     } catch (error) {
@@ -177,12 +165,14 @@ export const getOrdersCurrentUser = async (
     try {
         const userId = res.locals.user._id
         const { search, page = 1, limit = 5 } = req.query
-        const normalizedLimit = Math.min(Number(limit), 10).toString()
-        const normalizedLimitPage = Math.max(Number(page), 1)
-        const options = {
-            skip: (Number(normalizedLimitPage) - 1) * Number(normalizedLimit),
-            limit: Number(normalizedLimit),
-        }
+        const limitNum = Number.isFinite(Number(limit))
+            ? Math.min(Math.max(Number(limit), 1), 10)
+            : 5
+        const pageNum = Number.isFinite(Number(page))
+            ? Math.max(Number(page), 1)
+            : 1
+
+        const skip = (pageNum - 1) * limitNum
 
         const user = await User.findById(userId)
             .populate({
@@ -206,38 +196,42 @@ export const getOrdersCurrentUser = async (
         let orders = user.orders as unknown as IOrder[]
 
         if (search) {
-            // если не экранировать то получаем Invalid regular expression: /+1/i: Nothing to repeat
-            const searchRegex = new RegExp(search as string, 'i')
-            const searchNumber = Number(search)
-            const products = await Product.find({ title: searchRegex })
-            const productIds = products.map((product) => product._id)
+            const q = safeString(search, 64)
+            if (q) {
+                // если не экранировать то получаем Invalid regular expression: /+1/i: Nothing to repeat
+                const searchRegex = new RegExp(search as string, 'i')
+                const searchNumber = Number(search)
 
-            orders = orders.filter((order) => {
-                // eslint-disable-next-line max-len
-                const matchesProductTitle = order.products.some((product) =>
-                    productIds.some((id) => id.equals(product._id))
-                )
-                // eslint-disable-next-line max-len
-                const matchesOrderNumber =
-                    !Number.isNaN(searchNumber) &&
-                    order.orderNumber === searchNumber
+                const products = await Product.find({ title: searchRegex })
+                const productIds = products.map((product) => product._id)
 
-                return matchesOrderNumber || matchesProductTitle
-            })
+                orders = orders.filter((order) => {
+                    // eslint-disable-next-line max-len
+                    const matchesProductTitle = order.products.some((product) =>
+                        productIds.some((id) => id.equals(product._id))
+                    )
+                    // eslint-disable-next-line max-len
+                    const matchesOrderNumber =
+                        !Number.isNaN(searchNumber) &&
+                        order.orderNumber === searchNumber
+
+                    return matchesOrderNumber || matchesProductTitle
+                })
+            }
         }
 
         const totalOrders = orders.length
-        const totalPages = Math.ceil(totalOrders / Number(normalizedLimit))
+        const totalPages = Math.ceil(totalOrders /  limitNum)
 
-        orders = orders.slice(options.skip, options.skip + options.limit)
+        orders = orders.slice(skip, skip + limitNum)
 
         return res.send({
             orders,
             pagination: {
                 totalOrders,
                 totalPages,
-                currentPage: Number(normalizedLimitPage),
-                pageSize: Number(normalizedLimit),
+                currentPage: pageNum,
+                pageSize: limitNum,
             },
         })
     } catch (error) {
@@ -316,6 +310,15 @@ export const createOrder = async (
         const { address, payment, phone, total, email, items, comment } =
             req.body
 
+        // Валидация телефона (простой формат: + и 7–15 цифр)
+        const phoneNorm = String(phone ?? '').replace(/[^\d+]/g, '')
+        if (!/^\+?\d{7,15}$/.test(phoneNorm)) {
+            return next(new BadRequestError('Неверный формат телефона'))
+        }
+
+        // Санитизация комментария (экранируем HTML)
+        const safeComment = escapeHtml(comment, 1024)
+
         items.forEach((id: Types.ObjectId) => {
             const product = products.find((p) => p._id.equals(id))
             if (!product) {
@@ -335,9 +338,9 @@ export const createOrder = async (
             totalAmount: total,
             products: items,
             payment,
-            phone,
+            phone: phoneNorm,
             email,
-            comment,
+            comment: safeComment,
             customer: userId,
             deliveryAddress: address,
         })
