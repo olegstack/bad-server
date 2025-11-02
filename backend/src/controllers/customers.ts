@@ -29,7 +29,7 @@ export const getCustomers = async (
             orderCountTo,
             search,
         } = req.query
-
+        console.log('getCustomers query', req.query)
         const limitNum = Number.isFinite(Number(limit))
             ? Math.min(Math.max(Number(limit), 1), 10)
             : 10
