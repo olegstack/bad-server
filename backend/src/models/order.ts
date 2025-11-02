@@ -60,7 +60,8 @@ const orderSchema: Schema = new Schema(
             type: String,
             required: [true, 'Поле "phone" должно быть заполнено'],
             validate: {
-                validator: (v: string) => phoneRegExp.test(v),
+                validator: (v: string) =>
+                    /^\+?\d{7,15}$/.test(v.replace(/[^\d+]/g, '')),
                 message: 'Поле "phone" должно быть валидным телефоном.',
             },
         },

@@ -30,6 +30,14 @@ router.use(
     customerRouter
 )
 
+router.use(
+    '/users',
+    doubleCsrfProtection,
+    auth,
+    roleGuardMiddleware(Role.Admin),
+    customerRouter
+)
+
 router.use((_req: Request, _res: Response, next: NextFunction) => {
     next(new NotFoundError('Маршрут не найден'))
 })
