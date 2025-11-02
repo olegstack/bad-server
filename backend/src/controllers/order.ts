@@ -5,7 +5,11 @@ import NotFoundError from '../errors/not-found-error'
 import Order, { IOrder } from '../models/order'
 import Product, { IProduct } from '../models/product'
 import User from '../models/user'
-import { escapeHtml, escapeRegexForSearch, safeString } from '../utils/parseQuery'
+import {
+    escapeHtml,
+    escapeRegexForSearch,
+    safeString,
+} from '../utils/parseQuery'
 
 // eslint-disable-next-line max-len
 // GET /orders?page=2&limit=5&sort=totalAmount&order=desc&orderDateFrom=2024-07-01&orderDateTo=2024-08-01&status=delivering&totalAmountFrom=100&totalAmountTo=1000&search=%2B1
@@ -93,8 +97,18 @@ export const getOrders = async (
                     as: 'customer',
                 },
             },
-            { $unwind: '$customer' },
-            { $unwind: '$products' },
+            {
+                $unwind: {
+                    path: '$customer',
+                    preserveNullAndEmptyArrays: true,
+                },
+            },
+            {
+                $unwind: {
+                    path: '$products',
+                    preserveNullAndEmptyArrays: true,
+                },
+            },
         ]
 
         if (search) {
@@ -199,8 +213,8 @@ export const getOrdersCurrentUser = async (
             const q = safeString(search, 64)
             if (q) {
                 // если не экранировать то получаем Invalid regular expression: /+1/i: Nothing to repeat
-                const searchRegex = new RegExp(search as string, 'i')
-                const searchNumber = Number(search)
+                const searchRegex = new RegExp(escapeRegexForSearch(q), 'i')
+                const searchNumber = Number(q)
 
                 const products = await Product.find({ title: searchRegex })
                 const productIds = products.map((product) => product._id)
@@ -221,7 +235,7 @@ export const getOrdersCurrentUser = async (
         }
 
         const totalOrders = orders.length
-        const totalPages = Math.ceil(totalOrders /  limitNum)
+        const totalPages = Math.ceil(totalOrders / limitNum)
 
         orders = orders.slice(skip, skip + limitNum)
 
@@ -304,9 +318,6 @@ export const createOrder = async (
     next: NextFunction
 ) => {
     try {
-        const basket: IProduct[] = []
-        const products = await Product.find<IProduct>({})
-        const userId = res.locals.user._id
         const { address, payment, phone, total, email, items, comment } =
             req.body
 
@@ -315,6 +326,10 @@ export const createOrder = async (
         if (!/^\+?\d{7,15}$/.test(phoneNorm)) {
             return next(new BadRequestError('Неверный формат телефона'))
         }
+        const basket: IProduct[] = []
+
+        const products = await Product.find<IProduct>({})
+        const userId = res.locals.user._id
 
         // Санитизация комментария (экранируем HTML)
         const safeComment = escapeHtml(comment, 1024)
