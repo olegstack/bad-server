@@ -3,9 +3,10 @@ import { FilterQuery } from 'mongoose'
 import NotFoundError from '../errors/not-found-error'
 import Order from '../models/order'
 import User, { IUser } from '../models/user'
-import { escapeRegexForSearch, safeString } from '../utils/parseQuery'
 
-// GET /customers?page=2&limit=5&sort=totalAmount&order=desc&registrationDateFrom=2023-01-01&registrationDateTo=2023-12-31&lastOrderDateFrom=2023-01-01&lastOrderDateTo=2023-12-31&totalAmountFrom=100&totalAmountTo=1000&orderCountFrom=1&orderCountTo=10&search=...
+// TODO: Добавить guard admin
+// eslint-disable-next-line max-len
+// Get GET /customers?page=2&limit=5&sort=totalAmount&order=desc&registrationDateFrom=2023-01-01&registrationDateTo=2023-12-31&lastOrderDateFrom=2023-01-01&lastOrderDateTo=2023-12-31&totalAmountFrom=100&totalAmountTo=1000&orderCountFrom=1&orderCountTo=10
 export const getCustomers = async (
     req: Request,
     res: Response,
@@ -15,6 +16,8 @@ export const getCustomers = async (
         const {
             page = 1,
             limit = 10,
+            sortField = 'createdAt',
+            sortOrder = 'desc',
             registrationDateFrom,
             registrationDateTo,
             lastOrderDateFrom,
@@ -26,148 +29,125 @@ export const getCustomers = async (
             search,
         } = req.query
 
-        // ---- NEW: поддержка sort/sortOrder и sortField/sortOrder
-        const rawSortField = (req.query.sortField ??
-            req.query.sort ??
-            'createdAt') as string
-        const rawSortOrder = (req.query.sortOrder ??
-            req.query.order ??
-            'desc') as string
-
-        const allowedSortFields = new Set([
-            'createdAt',
-            'lastOrderDate',
-            'totalAmount',
-            'orderCount',
-            'name',
-        ])
-        const field = allowedSortFields.has(rawSortField)
-            ? rawSortField
-            : 'createdAt'
-        const dir: 1 | -1 =
-            String(rawSortOrder).toLowerCase() === 'asc' ? 1 : -1
-
-        const limitNum = Number.isFinite(Number(limit))
-            ? Math.min(Math.max(Number(limit), 1), 10)
-            : 10
-        const pageNum = Number.isFinite(Number(page))
-            ? Math.max(Number(page), 1)
-            : 1
-
         const filters: FilterQuery<Partial<IUser>> = {}
 
+        const normalizedLimit = Math.min(Number(limit), 10).toString()
+
         if (registrationDateFrom) {
-            const d = new Date(String(registrationDateFrom))
-            if (!Number.isNaN(d.getTime())) {
-                filters.createdAt = { ...filters.createdAt, $gte: d }
+            filters.createdAt = {
+                ...filters.createdAt,
+                $gte: new Date(registrationDateFrom as string),
             }
         }
 
         if (registrationDateTo) {
-            const d = new Date(String(registrationDateTo))
-            if (!Number.isNaN(d.getTime())) {
-                d.setHours(23, 59, 59, 999)
-                filters.createdAt = { ...filters.createdAt, $lte: d }
+            const endOfDay = new Date(registrationDateTo as string)
+            endOfDay.setHours(23, 59, 59, 999)
+            filters.createdAt = {
+                ...filters.createdAt,
+                $lte: endOfDay,
             }
         }
 
         if (lastOrderDateFrom) {
-            const d = new Date(String(lastOrderDateFrom))
-            if (!Number.isNaN(d.getTime())) {
-                filters.lastOrderDate = { ...filters.lastOrderDate, $gte: d }
+            filters.lastOrderDate = {
+                ...filters.lastOrderDate,
+                $gte: new Date(lastOrderDateFrom as string),
             }
         }
 
         if (lastOrderDateTo) {
-            const d = new Date(String(lastOrderDateTo))
-            if (!Number.isNaN(d.getTime())) {
-                d.setHours(23, 59, 59, 999)
-                filters.lastOrderDate = { ...filters.lastOrderDate, $lte: d }
+            const endOfDay = new Date(lastOrderDateTo as string)
+            endOfDay.setHours(23, 59, 59, 999)
+            filters.lastOrderDate = {
+                ...filters.lastOrderDate,
+                $lte: endOfDay,
             }
         }
 
-        if (typeof totalAmountFrom !== 'undefined') {
-            const v = Number(totalAmountFrom)
-            if (Number.isFinite(v)) {
-                filters.totalAmount = { ...filters.totalAmount, $gte: v }
+        if (totalAmountFrom) {
+            filters.totalAmount = {
+                ...filters.totalAmount,
+                $gte: Number(totalAmountFrom),
             }
         }
 
-        if (typeof totalAmountTo !== 'undefined') {
-            const v = Number(totalAmountTo)
-            if (Number.isFinite(v)) {
-                filters.totalAmount = { ...filters.totalAmount, $lte: v }
+        if (totalAmountTo) {
+            filters.totalAmount = {
+                ...filters.totalAmount,
+                $lte: Number(totalAmountTo),
             }
         }
 
-        if (typeof orderCountFrom !== 'undefined') {
-            const v = Number(orderCountFrom)
-            if (Number.isFinite(v)) {
-                filters.orderCount = { ...filters.orderCount, $gte: v }
+        if (orderCountFrom) {
+            filters.orderCount = {
+                ...filters.orderCount,
+                $gte: Number(orderCountFrom),
             }
         }
 
-        if (typeof orderCountTo !== 'undefined') {
-            const v = Number(orderCountTo)
-            if (Number.isFinite(v)) {
-                filters.orderCount = { ...filters.orderCount, $lte: v }
+        if (orderCountTo) {
+            filters.orderCount = {
+                ...filters.orderCount,
+                $lte: Number(orderCountTo),
             }
         }
 
-        if (typeof search === 'string' && search.length > 0) {
-            const q = safeString(search, 64)
-            if (q) {
-                const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
+        if (search) {
+            const searchRegex = new RegExp(search as string, 'i')
+            const orders = await Order.find(
+                {
+                    $or: [{ deliveryAddress: searchRegex }],
+                },
+                '_id'
+            )
 
-                // ищем заказы по адресу доставки, чтобы по ним связать пользователей
-                const orders = await Order.find(
-                    { deliveryAddress: safeRe },
-                    '_id'
-                )
-                const orderIds = orders.map((order) => order._id)
+            const orderIds = orders.map((order) => order._id)
 
-                if (orderIds.length > 0) {
-                    filters.$or = [
-                        { name: safeRe },
-                        { lastOrder: { $in: orderIds } },
-                    ]
-                } else {
-                    filters.$or = [{ name: safeRe }]
-                }
-            }
+            filters.$or = [
+                { name: searchRegex },
+                { lastOrder: { $in: orderIds } },
+            ]
         }
 
-        // ---- NEW: безопасное формирование sort
-        const sort: Record<string, 1 | -1> = { [field]: dir }
+        const sort: { [key: string]: any } = {}
 
-        const skip = (pageNum - 1) * limitNum
+        if (sortField && sortOrder) {
+            sort[sortField as string] = sortOrder === 'desc' ? -1 : 1
+        }
 
-        const users = await User.find(filters, null, {
+        const options = {
             sort,
-            skip,
-            limit: limitNum,
-        }).populate([
+            skip: (Number(page) - 1) * Number(normalizedLimit),
+            limit: Number(normalizedLimit),
+        }
+
+        const users = await User.find(filters, null, options).populate([
             'orders',
             {
                 path: 'lastOrder',
-                populate: { path: 'products' },
+                populate: {
+                    path: 'products',
+                },
             },
             {
                 path: 'lastOrder',
-                populate: { path: 'customer' },
+                populate: {
+                    path: 'customer',
+                },
             },
         ])
 
         const totalUsers = await User.countDocuments(filters)
-        const totalPages = Math.ceil(totalUsers / limitNum)
+        const totalPages = Math.ceil(totalUsers / Number(normalizedLimit))
 
-        return res.status(200).json({
+        res.status(200).json({
             customers: users,
             pagination: {
                 totalUsers,
                 totalPages,
-                currentPage: pageNum,
-                pageSize: limitNum,
+                currentPage: Number(page),
+                pageSize: Number(normalizedLimit),
             },
         })
     } catch (error) {
@@ -175,7 +155,8 @@ export const getCustomers = async (
     }
 }
 
-// GET /customers/:id
+// TODO: Добавить guard admin
+// Get /customers/:id
 export const getCustomerById = async (
     req: Request,
     res: Response,
@@ -192,7 +173,8 @@ export const getCustomerById = async (
     }
 }
 
-// PATCH /customers/:id
+// TODO: Добавить guard admin
+// Patch /customers/:id
 export const updateCustomer = async (
     req: Request,
     res: Response,
@@ -213,14 +195,14 @@ export const updateCustomer = async (
                     )
             )
             .populate(['orders', 'lastOrder'])
-
         res.status(200).json(updatedUser)
     } catch (error) {
         next(error)
     }
 }
 
-// DELETE /customers/:id
+// TODO: Добавить guard admin
+// Delete /customers/:id
 export const deleteCustomer = async (
     req: Request,
     res: Response,
