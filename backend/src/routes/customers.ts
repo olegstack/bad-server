@@ -9,8 +9,11 @@ import auth, { roleGuardMiddleware } from '../middlewares/auth'
 import { Role } from '../models/user'
 import { csrfIfNotTest } from '../middlewares/csrf'
 
+// Этот роутер монтируется уже ПОВЕРХ admin-гардов в index.ts,
+// но оставим защиту на всякий случай для прямого подключения.
 const customerRouter = Router()
 
+// Только GET — без CSRF
 customerRouter.get('/', auth, roleGuardMiddleware(Role.Admin), getCustomers)
 customerRouter.get(
     '/:id',
@@ -18,6 +21,8 @@ customerRouter.get(
     roleGuardMiddleware(Role.Admin),
     getCustomerById
 )
+
+// Изменяющие — с CSRF
 customerRouter.patch(
     '/:id',
     csrfIfNotTest,
@@ -25,6 +30,7 @@ customerRouter.patch(
     roleGuardMiddleware(Role.Admin),
     updateCustomer
 )
+
 customerRouter.delete(
     '/:id',
     csrfIfNotTest,

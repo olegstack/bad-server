@@ -30,7 +30,7 @@ app.use(urlencoded({ extended: true, limit: '10kb' }))
 app.use(json({ limit: '10kb' }))
 app.use(mongoSanitize())
 
-/** ---------- CORS (обязательно ДО healthcheck и роутов) ---------- */
+/** CORS */
 const WHITELIST = [
     ORIGIN_ALLOW,
     'http://localhost',
@@ -114,7 +114,7 @@ app.use(
 app.use(serveStatic(path.join(__dirname, 'public')))
 
 /** Routes & handlers */
-app.use(routes)
+app.use(['/api', '/'], routes)
 app.use(errors())
 app.use(errorHandler)
 

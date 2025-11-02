@@ -95,24 +95,28 @@ export const getCustomers = async (
             }
         }
 
-        if (typeof search !== 'undefined') {
-            const q = safeString(search, 64)
-            if (q) {
-                const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
+       if (typeof search === 'string' && search.length > 0) {
+           const q = safeString(search, 64)
+           if (q) {
+               const safeRe = new RegExp(escapeRegexForSearch(q), 'i')
 
-                // можно искать по имени или по адресу доставки последнего заказа
-                const orders = await Order.find(
-                    { deliveryAddress: safeRe },
-                    '_id'
-                )
-                const orderIds = orders.map((order) => order._id)
+               const orders = await Order.find(
+                   { deliveryAddress: safeRe },
+                   '_id'
+               )
+               const orderIds = orders.map((order) => order._id)
 
-                filters.$or = [
-                    { name: safeRe },
-                    { lastOrder: { $in: orderIds } },
-                ]
-            }
-        }
+               if (orderIds.length > 0) {
+                   filters.$or = [
+                       { name: safeRe },
+                       { lastOrder: { $in: orderIds } },
+                   ]
+               } else {
+                   filters.$or = [{ name: safeRe }]
+               }
+           }
+       }
+
 
         const sort: Record<string, 1 | -1> = {}
         if (sortField && sortOrder) {

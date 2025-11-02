@@ -18,7 +18,6 @@ export const uploadFile = async (
             return next(new BadRequestError('Файл не загружен'))
         }
 
-      
         if (req.file.size < fileSizeConfig.minSize) {
             await fs.unlink(req.file.path)
             return next(new BadRequestError('Размер файла слишком мал'))
@@ -29,24 +28,28 @@ export const uploadFile = async (
             return next(new BadRequestError('Размер файла слишком велик'))
         }
 
-        
         const mimeType = await validateMimeType(req.file.path)
-        if (!mimeType || !allowedTypes.includes(mimeType)) {
+        if (!mimeType || !mimeType.startsWith('image/')) {
             await fs.unlink(req.file.path)
             return next(new BadRequestError('Некорректный формат файла'))
         }
 
-    
-        const ext = path.extname(req.file.originalname)
+        // формируем безопасные пути
+        const ext = path.extname(req.file.originalname).toLowerCase()
         const safeName = crypto.randomBytes(16).toString('hex') + ext
-        const uploadDir = process.env.UPLOAD_PATH || 'uploads'
-        const newPath = path.join(uploadDir, safeName)
 
-        await fs.mkdir(uploadDir, { recursive: true })
+        const uploadDir = process.env.UPLOAD_PATH || 'uploads'
+        const absoluteUploadDir = path.isAbsolute(uploadDir)
+            ? uploadDir
+            : path.join(process.cwd(), uploadDir)
+
+        await fs.mkdir(absoluteUploadDir, { recursive: true })
+
+        const newPath = path.join(absoluteUploadDir, safeName)
         await fs.rename(req.file.path, newPath)
 
         return res.status(constants.HTTP_STATUS_CREATED).send({
-            fileName: `/${uploadDir}/${safeName}`,
+            fileName: `/${path.relative(process.cwd(), newPath).replace(/\\+/g, '/')}`,
             size: req.file.size,
             mimeType,
         })
