@@ -74,6 +74,20 @@ const corsOptions: CorsOptions = {
 }
 
 app.use(cors(corsOptions))
+
+app.use((req, res, next) => {
+    const origin = req.headers.origin as string | undefined
+    const whitelist = [
+        ORIGIN_ALLOW,
+        'http://localhost',
+        'http://localhost:5173',
+    ].filter(Boolean)
+    if (origin && whitelist.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Vary', 'Origin')
+    }
+    next()
+})
 app.options('*', cors(corsOptions))
 
 // Статика

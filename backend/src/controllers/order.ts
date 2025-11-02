@@ -43,40 +43,37 @@ export const getOrders = async (
             ? Math.max(Number(page), 1)
             : 1
 
-        if (typeof status !== 'undefined') {
-            if (typeof status === 'string' && /^[a-zA-Z0-9_-]+$/.test(status)) {
-                filters.status = status
-            } else {
-                throw new BadRequestError('Невалидный параметр статуса')
-            }
+        if (typeof status === 'string' && /^[a-zA-Z0-9_-]+$/.test(status)) {
+            filters.status = status
         }
 
         if (typeof totalAmountFrom !== 'undefined') {
             const v = Number(totalAmountFrom)
-            if (!Number.isFinite(v))
-                throw new BadRequestError('Неверный totalAmountFrom')
-            filters.totalAmount = { ...filters.totalAmount, $gte: v }
+            if (Number.isFinite(v)) {
+                filters.totalAmount = { ...filters.totalAmount, $gte: v }
+            }
         }
 
+        // стало:
         if (typeof totalAmountTo !== 'undefined') {
             const v = Number(totalAmountTo)
-            if (!Number.isFinite(v))
-                throw new BadRequestError('Неверный totalAmountTo')
-            filters.totalAmount = { ...filters.totalAmount, $lte: v }
+            if (Number.isFinite(v)) {
+                filters.totalAmount = { ...filters.totalAmount, $lte: v }
+            }
         }
 
         if (typeof orderDateFrom !== 'undefined') {
             const d = new Date(String(orderDateFrom))
-            if (Number.isNaN(d.getTime()))
-                throw new BadRequestError('Неверный orderDateFrom')
-            filters.createdAt = { ...filters.createdAt, $gte: d }
+            if (!Number.isNaN(d.getTime())) {
+                filters.createdAt = { ...filters.createdAt, $gte: d }
+            }
         }
 
         if (typeof orderDateTo !== 'undefined') {
             const d = new Date(String(orderDateTo))
-            if (Number.isNaN(d.getTime()))
-                throw new BadRequestError('Неверный orderDateTo')
-            filters.createdAt = { ...filters.createdAt, $lte: d }
+            if (!Number.isNaN(d.getTime())) {
+                filters.createdAt = { ...filters.createdAt, $lte: d }
+            }
         }
 
         const aggregatePipeline: any[] = [

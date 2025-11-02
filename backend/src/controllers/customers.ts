@@ -68,12 +68,12 @@ export const getCustomers = async (
             }
         }
 
-        if (typeof totalAmountFrom !== 'undefined') {
-            const v = Number(totalAmountFrom)
-            if (Number.isFinite(v)) {
-                filters.totalAmount = { ...filters.totalAmount, $gte: v }
-            }
-        }
+       if (typeof totalAmountFrom !== 'undefined') {
+           const v = Number(totalAmountFrom)
+           if (Number.isFinite(v)) {
+               filters.totalAmount = { ...filters.totalAmount, $gte: v }
+           }
+       }
         if (typeof totalAmountTo !== 'undefined') {
             const v = Number(totalAmountTo)
             if (Number.isFinite(v)) {
