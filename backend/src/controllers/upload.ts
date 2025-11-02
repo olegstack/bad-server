@@ -1,16 +1,13 @@
-import { Request, Response, NextFunction } from 'express'
+import { NextFunction, Request, Response } from 'express'
 import { constants } from 'http2'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import crypto from 'crypto'
-import fs from 'fs/promises'
-import path from 'path'
-import BadRequestError from '../errors/bad-request-error'
+import { allowedTypes } from '../middlewares/file'
 import { validateMimeType } from '../utils/validateMimeType'
+import BadRequestError from '../errors/bad-request-error'
 import { fileSizeConfig } from '../config'
 
-/**
- * Контроллер загрузки файлов
- * POST /upload
- */
 export const uploadFile = async (
     req: Request,
     res: Response,
@@ -18,49 +15,48 @@ export const uploadFile = async (
 ) => {
     try {
         if (!req.file) {
-            throw new BadRequestError('Файл не передан')
+            return next(new BadRequestError('Файл не загружен'))
         }
 
-        const { size, path: tempPath, originalname } = req.file
+        const { size, originalname, path: tmpPath } = req.file
 
-        // Проверка размера файла
         if (size < fileSizeConfig.minSize) {
-            throw new BadRequestError(
-                'Размер файла меньше минимально допустимого'
-            )
+            await fs.unlink(tmpPath)
+            return next(new BadRequestError('Размер файла слишком мал'))
         }
         if (size > fileSizeConfig.maxSize) {
-            throw new BadRequestError(
-                'Размер файла превышает максимальный лимит'
-            )
+            await fs.unlink(tmpPath)
+            return next(new BadRequestError('Размер файла слишком велик'))
         }
 
-        // Проверяем MIME сигнатуру (безопасная проверка)
-        const mimeType = await validateMimeType(tempPath)
-        if (!mimeType) {
-            throw new BadRequestError('Неверный тип файла')
+        // Определяем фактический MIME (по сигнатуре/контенту)
+        const mimeType = await validateMimeType(tmpPath)
+        if (!mimeType || !mimeType.startsWith('image/')) {
+            await fs.unlink(tmpPath)
+            return next(new BadRequestError('Некорректный формат файла'))
         }
 
-        // Безопасное новое имя (исключаем использование originalname)
-        const ext = path.extname(originalname).toLowerCase()
+        // Генерируем безопасное имя
+        const ext = path.extname(originalname || '').toLowerCase() || '.bin'
         const safeName = crypto.randomBytes(16).toString('hex') + ext
 
-        // Каталог загрузки
-        const uploadDir = process.env.UPLOAD_PATH || 'uploads'
-        const absoluteUploadDir = path.isAbsolute(uploadDir)
-            ? uploadDir
-            : path.join(process.cwd(), uploadDir)
+        // Нормализуем базовую директорию загрузок
+        const envUpload = process.env.UPLOAD_PATH || 'uploads'
+        // всегда приводим к относительному виду под проект
+        const uploadRel = envUpload
+            .replace(/^(\.+[\\/])+/, '')
+            .replace(/^\/+/, '')
+        const absoluteUploadDir = path.join(process.cwd(), uploadRel)
 
         await fs.mkdir(absoluteUploadDir, { recursive: true })
-
-        // Переносим файл из временной папки
         const newPath = path.join(absoluteUploadDir, safeName)
-        await fs.rename(tempPath, newPath)
 
-        // Стабильный путь для ответа клиенту (без оригинального имени)
+        await fs.rename(tmpPath, newPath)
+
+        // Публичный путь (без абсолютных директорий ОС)
         const publicFileName =
             '/' +
-            [uploadDir, safeName].filter(Boolean).join('/').replace(/\\+/g, '/')
+            [uploadRel, safeName].filter(Boolean).join('/').replace(/\\+/g, '/')
 
         return res.status(constants.HTTP_STATUS_CREATED).send({
             fileName: publicFileName,
@@ -68,6 +64,11 @@ export const uploadFile = async (
             mimeType,
         })
     } catch (error) {
+        try {
+            if (req.file?.path) await fs.unlink(req.file.path).catch(() => {})
+        } catch {}
         return next(error)
     }
 }
+
+export default {}

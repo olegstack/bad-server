@@ -40,10 +40,10 @@ export const getOrders = async (
 
         // --- NEW: совместимость по параметрам сортировки (sort/sortOrder и sortField/sortOrder)
         const rawSortField = (req.query.sortField ??
-            req.query.sort ??
+            (req.query as any).sort ??
             'createdAt') as string
         const rawSortOrder = (req.query.sortOrder ??
-            req.query.order ??
+            (req.query as any).order ??
             'desc') as string
         const allowedSortFields = new Set([
             'createdAt',
@@ -86,6 +86,21 @@ export const getOrders = async (
             const d = new Date(String(orderDateTo))
             if (!Number.isNaN(d.getTime()))
                 filters.createdAt = { ...filters.createdAt, $lte: d }
+        }
+
+        // --- NEW: строгая валидация search, чтобы уязвимая агрегация давала 400
+        if (typeof search !== 'undefined') {
+            if (typeof search !== 'string') {
+                return next(new BadRequestError('Некорректный параметр поиска'))
+            }
+            const qRaw = safeString(search, 64)
+            if (!qRaw) {
+                return next(new BadRequestError('Некорректный параметр поиска'))
+            }
+            // блокируем явные символы операторов/агрегации: { } [ ] $ :
+            if (/[{}\[\]\$:]/.test(qRaw)) {
+                return next(new BadRequestError('Некорректный параметр поиска'))
+            }
         }
 
         // Поиск: подготавливаем фильтр ДО пагинации (без $unwind)
@@ -211,7 +226,7 @@ export const getOrdersCurrentUser = async (
 
         const [orders, totalOrders] = await Promise.all([
             Order.find(filters)
-                .sort({ createdAt: -1 }) // или { orderNumber: -1 }
+                .sort({ createdAt: -1 })
                 .skip(skip)
                 .limit(limitNum)
                 .populate(['customer', 'products']),
