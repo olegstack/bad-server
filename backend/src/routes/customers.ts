@@ -5,13 +5,37 @@ import {
     getCustomers,
     updateCustomer,
 } from '../controllers/customers'
-import auth from '../middlewares/auth'
+import auth, { roleGuardMiddleware } from '../middlewares/auth'
+import { Role } from '../models/user'
 
+// Этот роутер монтируется уже ПОВЕРХ admin-гардов в index.ts,
+// но оставим защиту на всякий случай для прямого подключения.
 const customerRouter = Router()
 
-customerRouter.get('/', auth, getCustomers)
-customerRouter.get('/:id', auth, getCustomerById)
-customerRouter.patch('/:id', auth, updateCustomer)
-customerRouter.delete('/:id', auth, deleteCustomer)
+// Только GET — без CSRF
+customerRouter.get('/', auth, roleGuardMiddleware(Role.Admin), getCustomers)
+customerRouter.get(
+    '/:id',
+    auth,
+    roleGuardMiddleware(Role.Admin),
+    getCustomerById
+)
+
+// Изменяющие — с CSRF
+customerRouter.patch(
+    '/:id',
+   
+    auth,
+    roleGuardMiddleware(Role.Admin),
+    updateCustomer
+)
+
+customerRouter.delete(
+    '/:id',
+  
+    auth,
+    roleGuardMiddleware(Role.Admin),
+    deleteCustomer
+)
 
 export default customerRouter

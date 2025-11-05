@@ -1,15 +1,39 @@
 import { NextFunction, Request, Response } from 'express'
 import { constants } from 'http2'
+import fs from 'node:fs/promises'
 import BadRequestError from '../errors/bad-request-error'
+import { fileSizeConfig } from '../config'
+import { allowedTypes } from '../middlewares/file'
+import { validateMimeType } from '../utils/validateMimeType'
 
 export const uploadFile = async (
     req: Request,
     res: Response,
     next: NextFunction
 ) => {
-    if (!req.file) {
-        return next(new BadRequestError('Файл не загружен'))
+    if (!req.file || !req.file.path) {
+        return next(
+            new BadRequestError(
+                'Файл не загружен. Убедитесь, что это изображение (png, jpg, etc)'
+            )
+        )
     }
+
+    if (req.file.size < fileSizeConfig.minSize) {
+        await fs.unlink(req.file.path)
+        return next(
+            new BadRequestError(
+                'Файл слишком маленький.'
+            )
+        )
+    }
+
+    const mimeType = await validateMimeType(req.file.path)
+    if (!mimeType || !allowedTypes.includes(mimeType)) {
+        await fs.unlink(req.file.path)
+        return next(new BadRequestError('Некорректный формат файла'))
+    }
+
     try {
         const fileName = process.env.UPLOAD_PATH
             ? `/${process.env.UPLOAD_PATH}/${req.file.filename}`

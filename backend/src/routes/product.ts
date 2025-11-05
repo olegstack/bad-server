@@ -15,28 +15,33 @@ import { Role } from '../models/user'
 
 const productRouter = Router()
 
+// Список — без auth
 productRouter.get('/', getProducts)
 productRouter.post(
     '/',
+    
     auth,
     roleGuardMiddleware(Role.Admin),
     validateProductBody,
     createProduct
 )
+
+productRouter.patch(
+    '/:productId',
+    
+    auth,
+    roleGuardMiddleware(Role.Admin),
+    validateObjId,
+    validateProductUpdateBody,
+    updateProduct
+)
+
 productRouter.delete(
     '/:productId',
     auth,
     roleGuardMiddleware(Role.Admin),
     validateObjId,
     deleteProduct
-)
-productRouter.patch(
-    '/:productId',
-    auth,
-    roleGuardMiddleware(Role.Admin),
-    validateObjId,
-    validateProductUpdateBody,
-    updateProduct
 )
 
 export default productRouter

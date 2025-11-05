@@ -2,9 +2,14 @@
 logs
 *.log
 npm-debug.log*
+cookies.txt
+.DS_Store
+Thumbs.db
+.env
 
 # Dependency directory
 node_modules
+npm-debug.log*
 
 # Optional npm cache directory
 .npm
@@ -18,3 +23,14 @@ node_modules
 dist
 temp
 .env
+build
+coverage
+*.log
+*.pid
+# === тестовые артефакты ===
+test*.json
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp

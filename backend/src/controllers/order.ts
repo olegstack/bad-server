@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express'
 import { FilterQuery, Error as MongooseError, Types } from 'mongoose'
+import validator from 'validator'
 import BadRequestError from '../errors/bad-request-error'
 import NotFoundError from '../errors/not-found-error'
 import Order, { IOrder } from '../models/order'
@@ -28,7 +29,22 @@ export const getOrders = async (
             search,
         } = req.query
 
+        const limitNum = Math.min(Number(limit), 5).toString()
         const filters: FilterQuery<Partial<IOrder>> = {}
+
+        if (status) {
+            if (typeof status === 'string' && /^[a-zA-Z0-9_-]+$/.test(status)) {
+                filters.status = status
+            } else {
+                throw new BadRequestError('Hевалидный параметр статуса')
+            }
+        }
+
+        if (search) {
+            if (/[^\w\s]/.test(search as string)) {
+                throw new BadRequestError('Hевалидный поисковый запрос')
+            }
+        }
 
         if (status) {
             if (typeof status === 'object') {
@@ -116,8 +132,8 @@ export const getOrders = async (
 
         aggregatePipeline.push(
             { $sort: sort },
-            { $skip: (Number(page) - 1) * Number(limit) },
-            { $limit: Number(limit) },
+            { $skip: (Number(page) - 1) * Number(limitNum) },
+            { $limit: Number(limitNum) },
             {
                 $group: {
                     _id: '$_id',
@@ -133,7 +149,7 @@ export const getOrders = async (
 
         const orders = await Order.aggregate(aggregatePipeline)
         const totalOrders = await Order.countDocuments(filters)
-        const totalPages = Math.ceil(totalOrders / Number(limit))
+        const totalPages = Math.ceil(totalOrders / Number(limitNum))
 
         res.status(200).json({
             orders,
@@ -141,7 +157,7 @@ export const getOrders = async (
                 totalOrders,
                 totalPages,
                 currentPage: Number(page),
-                pageSize: Number(limit),
+                pageSize: Number(limitNum),
             },
         })
     } catch (error) {
@@ -157,9 +173,10 @@ export const getOrdersCurrentUser = async (
     try {
         const userId = res.locals.user._id
         const { search, page = 1, limit = 5 } = req.query
+        const limitNum = Math.min(Number(limit), 5)
         const options = {
             skip: (Number(page) - 1) * Number(limit),
-            limit: Number(limit),
+            limit: Number(limitNum),
         }
 
         const user = await User.findById(userId)
@@ -205,7 +222,7 @@ export const getOrdersCurrentUser = async (
         }
 
         const totalOrders = orders.length
-        const totalPages = Math.ceil(totalOrders / Number(limit))
+        const totalPages = Math.ceil(totalOrders / Number(limitNum))
 
         orders = orders.slice(options.skip, options.skip + options.limit)
 
@@ -215,7 +232,7 @@ export const getOrdersCurrentUser = async (
                 totalOrders,
                 totalPages,
                 currentPage: Number(page),
-                pageSize: Number(limit),
+                pageSize: Number(limitNum),
             },
         })
     } catch (error) {
@@ -294,6 +311,10 @@ export const createOrder = async (
         const { address, payment, phone, total, email, items, comment } =
             req.body
 
+        if (phone && !validator.isMobilePhone(phone)) {
+            throw new BadRequestError('Не валидный номер телефона')
+        }
+
         items.forEach((id: Types.ObjectId) => {
             const product = products.find((p) => p._id.equals(id))
             if (!product) {
@@ -319,6 +340,7 @@ export const createOrder = async (
             customer: userId,
             deliveryAddress: address,
         })
+
         const populateOrder = await newOrder.populate(['customer', 'products'])
         await populateOrder.save()
 
