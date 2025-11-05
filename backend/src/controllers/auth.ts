@@ -8,48 +8,30 @@ import BadRequestError from '../errors/bad-request-error'
 import ConflictError from '../errors/conflict-error'
 import NotFoundError from '../errors/not-found-error'
 import UnauthorizedError from '../errors/unauthorized-error'
-import User, { Role } from '../models/user'
-
-// Утилита: определяем, что это "тестовый админ" по email
-const isAdminEmail = (email: string) => /^admin@/i.test(email)
+import User from '../models/user'
+import { generateCsrfToken } from '../utils/generateCsrfToken'
 
 // POST /auth/login
 const login = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { email, password } = req.body
+        const user = await User.findUserByCredentials(email, password)
+        const accessToken = user.generateAccessToken()
+        const refreshToken = await user.generateRefreshToken()
 
-        try {
-            const user = await User.findUserByCredentials(email, password)
-            const accessToken = user.generateAccessToken()
-            const refreshToken = await user.generateRefreshToken()
-            res.cookie(
-                REFRESH_TOKEN.cookie.name,
-                refreshToken,
-                REFRESH_TOKEN.cookie.options
-            )
-            return res.json({ success: true, user, accessToken })
-        } catch (e) {
-            // Если логин не удался — для стабильности автотестов создаём пользователя на лету
-            if (e instanceof UnauthorizedError) {
-                const created = new User({
-                    email,
-                    password,
-                    name: 'User',
-                    ...(isAdminEmail(email) ? { roles: [Role.Admin] } : {}),
-                })
-                await created.save()
+        res.cookie(
+            REFRESH_TOKEN.cookie.name,
+            refreshToken,
+            REFRESH_TOKEN.cookie.options
+        )
 
-                const accessToken = created.generateAccessToken()
-                const refreshToken = await created.generateRefreshToken()
-                res.cookie(
-                    REFRESH_TOKEN.cookie.name,
-                    refreshToken,
-                    REFRESH_TOKEN.cookie.options
-                )
-                return res.json({ success: true, user: created, accessToken })
-            }
-            throw e
-        }
+        res.cookie('csrfToken', generateCsrfToken())
+
+        return res.json({
+            success: true,
+            user,
+            accessToken,
+        })
     } catch (err) {
         return next(err)
     }
@@ -59,16 +41,8 @@ const login = async (req: Request, res: Response, next: NextFunction) => {
 const register = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { email, password, name } = req.body
-
-        // Создаём пользователя (для тестов — автоприсваиваем admin по email)
-        const newUser = new User({
-            email,
-            password,
-            name: name || 'User',
-            ...(isAdminEmail(email) ? { roles: [Role.Admin] } : {}),
-        })
+        const newUser = new User({ email, password, name })
         await newUser.save()
-
         const accessToken = newUser.generateAccessToken()
         const refreshToken = await newUser.generateRefreshToken()
 
@@ -78,47 +52,22 @@ const register = async (req: Request, res: Response, next: NextFunction) => {
             REFRESH_TOKEN.cookie.options
         )
 
+        res.cookie('csrfToken', generateCsrfToken())
+
         return res.status(constants.HTTP_STATUS_CREATED).json({
             success: true,
             user: newUser,
             accessToken,
         })
     } catch (error) {
-        // E11000 -> e-mail уже существует. Пробуем "автологин"
-        if (error instanceof Error && error.message.includes('E11000')) {
-            try {
-                const existing = await User.findUserByCredentials(
-                    req.body.email,
-                    req.body.password
-                )
-                const accessToken = existing.generateAccessToken()
-                const refreshToken = await existing.generateRefreshToken()
-
-                res.cookie(
-                    REFRESH_TOKEN.cookie.name,
-                    refreshToken,
-                    REFRESH_TOKEN.cookie.options
-                )
-
-                return res.status(constants.HTTP_STATUS_OK).json({
-                    success: true,
-                    user: existing,
-                    accessToken,
-                })
-            } catch {
-                // email занят, но пароль не подходит
-                return next(
-                    new ConflictError(
-                        'Пользователь с таким email уже существует'
-                    )
-                )
-            }
-        }
-
         if (error instanceof MongooseError.ValidationError) {
             return next(new BadRequestError(error.message))
         }
-
+        if (error instanceof Error && error.message.includes('E11000')) {
+            return next(
+                new ConflictError('Пользователь с таким email уже существует')
+            )
+        }
         return next(error)
     }
 }
@@ -143,7 +92,7 @@ const getCurrentUser = async (
     }
 }
 
-// Вспомогательная логика: удаляем refresh из базы по cookie
+// Можно лучше: вынести общую логику получения данных из refresh токена
 const deleteRefreshTokenInUser = async (
     req: Request,
     _res: Response,
@@ -160,21 +109,24 @@ const deleteRefreshTokenInUser = async (
         rfTkn,
         REFRESH_TOKEN.secret
     ) as JwtPayload
-    const user = await User.findOne({ _id: decodedRefreshTkn._id }).orFail(
-        () => new UnauthorizedError('Пользователь не найден в базе')
-    )
+    const user = await User.findOne({
+        _id: decodedRefreshTkn._id,
+    }).orFail(() => new UnauthorizedError('Пользователь не найден в базе'))
 
     const rTknHash = crypto
         .createHmac('sha256', REFRESH_TOKEN.secret)
         .update(rfTkn)
         .digest('hex')
+
     user.tokens = user.tokens.filter((tokenObj) => tokenObj.token !== rTknHash)
+
     await user.save()
 
     return user
 }
 
-// GET /auth/logout
+// Реализация удаления токена из базы может отличаться
+// GET  /auth/logout
 const logout = async (req: Request, res: Response, next: NextFunction) => {
     try {
         await deleteRefreshTokenInUser(req, res, next)
@@ -183,13 +135,15 @@ const logout = async (req: Request, res: Response, next: NextFunction) => {
             maxAge: -1,
         }
         res.cookie(REFRESH_TOKEN.cookie.name, '', expireCookieOptions)
-        res.status(200).json({ success: true })
+        res.status(200).json({
+            success: true,
+        })
     } catch (error) {
         next(error)
     }
 }
 
-// GET /auth/token
+// GET  /auth/token
 const refreshAccessToken = async (
     req: Request,
     res: Response,
@@ -225,7 +179,9 @@ const getCurrentUserRoles = async (
 ) => {
     const userId = res.locals.user._id
     try {
-        await User.findById(userId, req.body, { new: true }).orFail(
+        await User.findById(userId, req.body, {
+            new: true,
+        }).orFail(
             () =>
                 new NotFoundError(
                     'Пользователь по заданному id отсутствует в базе'

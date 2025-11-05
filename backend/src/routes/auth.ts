@@ -20,7 +20,7 @@ authRouter.patch('/me', csrfIfNotTest, auth, updateCurrentUser)
 
 // Логин/регистрация
 authRouter.post('/login', login)
-authRouter.post('/register', csrfIfNotTest, register)
+authRouter.post('/register', register)
 
 // Обновление токена/выход (POST — с CSRF)
 authRouter.post('/token', csrfIfNotTest, refreshAccessToken)
