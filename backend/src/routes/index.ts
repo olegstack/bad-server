@@ -8,20 +8,12 @@ import orderRouter from './order'
 import productRouter from './product'
 import uploadRouter from './upload'
 import { Role } from '../models/user'
-import { generateCsrfToken } from '../middlewares/csrf'
 
 const router = Router()
-
-// CSRF token (GET — без защиты)
-router.get('/csrf/token', (req: Request, res: Response) => {
-    const csrfToken = generateCsrfToken(req, res)
-    res.json({ csrfToken })
-})
 
 // Аутентификация и профиль
 router.use('/auth', authRouter)
 
-// Товары (как было — /product)
 router.use('/product', productRouter)
 
 // Заказы: поддерживаем ОДНОВРЕМЕННО оба пути — /orders и /order

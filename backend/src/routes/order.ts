@@ -21,10 +21,7 @@ orderRouter.post('/', auth, validateOrderBody, createOrder)
 // Админский список
 orderRouter.get('/', auth, roleGuardMiddleware(Role.Admin), getOrders)
 
-// Алиас, если автотесты дергают /orders/all
 orderRouter.get('/all', auth, roleGuardMiddleware(Role.Admin), getOrders)
-
-// Мои заказы, совместимость с фронтом, который стучится в /order/all/me
 orderRouter.get('/all/me', auth, getOrdersCurrentUser)
 
 // Мои заказы

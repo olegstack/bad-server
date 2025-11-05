@@ -13,13 +13,10 @@ import {
 } from '../middlewares/validations'
 import { Role } from '../models/user'
 
-// Путь оставляем /product (как у тебя было)
 const productRouter = Router()
 
 // Список — без auth
 productRouter.get('/', getProducts)
-
-// Создать/обновить/удалить — админ + CSRF на мутациях
 productRouter.post(
     '/',
     
@@ -41,7 +38,6 @@ productRouter.patch(
 
 productRouter.delete(
     '/:productId',
-    
     auth,
     roleGuardMiddleware(Role.Admin),
     validateObjId,
