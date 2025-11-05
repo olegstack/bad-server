@@ -15,7 +15,7 @@ export default function serveStatic(baseDir: string) {
         const absReq = path.resolve(filePath)
         const absBase = path.resolve(baseDir)
         if (!absReq.startsWith(absBase)) return next()
-
+        // Проверяем, существует ли файл
         fs.access(absReq, fs.constants.F_OK, (err) => {
             if (err) {
                 // Файл не найден — передаём дальше

@@ -12,12 +12,20 @@ export const uploadFile = async (
     next: NextFunction
 ) => {
     if (!req.file || !req.file.path) {
-        return next(new BadRequestError('Файл не загружен'))
+        return next(
+            new BadRequestError(
+                'Файл не загружен. Убедитесь, что это изображение (png, jpg, etc)'
+            )
+        )
     }
 
     if (req.file.size < fileSizeConfig.minSize) {
         await fs.unlink(req.file.path)
-        return next(new BadRequestError('Размер файла слишком мал'))
+        return next(
+            new BadRequestError(
+                'Файл слишком маленький.'
+            )
+        )
     }
 
     const mimeType = await validateMimeType(req.file.path)

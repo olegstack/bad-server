@@ -12,7 +12,6 @@ import {
     validateProductUpdateBody,
 } from '../middlewares/validations'
 import { Role } from '../models/user'
-import { csrfIfNotTest } from '../middlewares/csrf'
 
 // Путь оставляем /product (как у тебя было)
 const productRouter = Router()
@@ -23,7 +22,7 @@ productRouter.get('/', getProducts)
 // Создать/обновить/удалить — админ + CSRF на мутациях
 productRouter.post(
     '/',
-    csrfIfNotTest,
+    
     auth,
     roleGuardMiddleware(Role.Admin),
     validateProductBody,
@@ -32,7 +31,7 @@ productRouter.post(
 
 productRouter.patch(
     '/:productId',
-    csrfIfNotTest,
+    
     auth,
     roleGuardMiddleware(Role.Admin),
     validateObjId,
@@ -42,7 +41,7 @@ productRouter.patch(
 
 productRouter.delete(
     '/:productId',
-    csrfIfNotTest,
+    
     auth,
     roleGuardMiddleware(Role.Admin),
     validateObjId,

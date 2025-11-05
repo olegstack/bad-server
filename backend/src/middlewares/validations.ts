@@ -3,7 +3,7 @@ import { Types } from 'mongoose'
 
 // eslint-disable-next-line no-useless-escape
 export const phoneRegExp = /^\+?\d{7,15}$/
-
+ 
 export enum PaymentType {
     Card = 'card',
     Online = 'online',
